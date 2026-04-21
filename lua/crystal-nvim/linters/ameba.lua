@@ -9,7 +9,14 @@ M.meta = {
 
 M.cmd = "ameba"
 
-M.args = { "--format", "json", "--stdin-filename", "$FILENAME" }
+M.args = {
+  "--format",
+  "json",
+  "--stdin-filename",
+  function()
+    return vim.api.nvim_buf_get_name(0)
+  end,
+}
 
 M.stdin = true
 
@@ -41,16 +48,37 @@ M.parser = function(output)
           code = issue.rule_name,
         }
 
-        if issue.location then
-          diagnostic.lnum = issue.location.line - 1
-          diagnostic.col = issue.location.column - 1
-          diagnostic.end_lnum = diagnostic.lnum
-          diagnostic.end_col = diagnostic.col
+        local ok, loc = pcall(function()
+          if not issue.location or not issue.location.line then
+            return nil
+          end
+          local col = issue.location.column and issue.location.column - 1 or 0
+          return {
+            lnum = issue.location.line - 1,
+            col = col,
+          }
+        end)
+
+        if ok and loc then
+          diagnostic.lnum = loc.lnum
+          diagnostic.col = loc.col
+          diagnostic.end_lnum = loc.lnum
+          diagnostic.end_col = loc.col
         end
 
-        if issue.end_location then
-          diagnostic.end_lnum = issue.end_location.line - 1
-          diagnostic.end_col = issue.end_location.column - 1
+        local ok2, eloc = pcall(function()
+          if not issue.end_location or not issue.end_location.line then
+            return nil
+          end
+          return {
+            end_lnum = issue.end_location.line - 1,
+            end_col = issue.end_location.column and issue.end_location.column - 1 or 0,
+          }
+        end)
+
+        if ok2 and eloc then
+          diagnostic.end_lnum = eloc.end_lnum
+          diagnostic.end_col = eloc.end_col
         end
 
         table.insert(diagnostics, diagnostic)
