@@ -17,6 +17,8 @@ M.append_fname = false
 
 M.exit_codes = { 0, 1 }
 
+M.ignore_exitcode = true
+
 M.parser = function(output, bufnr)
   if not output or output == "" then
     return {}
