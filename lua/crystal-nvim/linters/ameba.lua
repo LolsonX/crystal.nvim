@@ -15,37 +15,30 @@ M.stdin = true
 
 M.append_fname = false
 
-M.exit_codes = { 0, 1 }
-
 M.ignore_exitcode = true
 
-M.parser = function(output, bufnr)
-  if not output or output == "" then
-    return {}
-  end
+local severity_map = {
+  Error = vim.diagnostic.severity.ERROR,
+  Warning = vim.diagnostic.severity.WARN,
+  Convention = vim.diagnostic.severity.HINT,
+}
 
-  local ok, data = pcall(vim.json.decode, output)
-  if not ok or not data or not data.sources then
-    return {}
-  end
-
+M.parser = function(output)
   local diagnostics = {}
+  local decoded = vim.json.decode(output)
 
-  for _, source in ipairs(data.sources) do
+  if not decoded or not decoded.sources then
+    return diagnostics
+  end
+
+  for _, source in ipairs(decoded.sources) do
     if source.issues then
       for _, issue in ipairs(source.issues) do
-        local severity = "info"
-        if issue.severity == "Error" then
-          severity = "error"
-        elseif issue.severity == "Warning" then
-          severity = "warning"
-        end
-
         local diagnostic = {
-          message = issue.message,
-          severity = severity,
-          code = issue.rule_name,
           source = "ameba",
+          message = issue.message,
+          severity = severity_map[issue.severity] or vim.diagnostic.severity.HINT,
+          code = issue.rule_name,
         }
 
         if issue.location then
