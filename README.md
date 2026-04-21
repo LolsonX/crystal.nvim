@@ -4,7 +4,7 @@ Crystal language support for Neovim, built for [LazyVim](https://www.lazyvim.org
 
 ## Features
 
-- **LSP**: Crystalline via [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig) (auto-detected)
+- **LSP**: Crystal LSP via [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig) (auto-detected)
 - **Linting**: Ameba via [nvim-lint](https://github.com/mfussenegger/nvim-lint)
 - **Formatting**: `crystal fmt` via [conform.nvim](https://github.com/stevearc/conform.nvim)
 - **Treesitter**: Crystal parser from [crystal-lang-tools/tree-sitter-crystal](https://github.com/crystal-lang-tools/tree-sitter-crystal)
@@ -46,7 +46,7 @@ return { "LolsonX/crystal.nvim" }
 | [nvim-treesitter-endwise](https://github.com/RRethy/nvim-treesitter-endwise) | Auto-close `end` blocks |
 | [nvim-lint](https://github.com/mfussenegger/nvim-lint) | Ameba linter integration |
 | [conform.nvim](https://github.com/stevearc/conform.nvim) | `crystal fmt` formatter |
-| [crystalline](https://github.com/elbywan/crystalline) | LSP server (install separately) |
+
 
 ## Structure
 
