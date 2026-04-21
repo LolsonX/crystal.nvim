@@ -1,6 +1,6 @@
 # crystal.nvim
 
-Crystal language support for Neovim, built for [LazyVim](https://www.lazyvim.org).
+Crystal language support for Neovim.
 
 ## Features
 
@@ -25,7 +25,6 @@ return { "LolsonX/crystal.nvim" }
 {
   "LolsonX/crystal.nvim",
   dependencies = {
-    "LazyVim/LazyVim",
     "nvim-treesitter/nvim-treesitter",
     "RRethy/nvim-treesitter-endwise",
     "mfussenegger/nvim-lint",
@@ -52,7 +51,7 @@ return { "LolsonX/crystal.nvim" }
 ```
 crystal.nvim/
 ├── lua/crystal-nvim/
-│   ├── init.lua        -- LazyVim plugin specs (lint, conform, treesitter, endwise)
+│   ├── init.lua        -- Plugin specs (lint, conform, treesitter, endwise)
 │   └── autocmds.lua    -- Treesitter parser override + .cr filetype registration
 └── queries/crystal/
     └── endwise.scm     -- Endwise queries for Crystal syntax
