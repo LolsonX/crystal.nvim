@@ -1,11 +1,12 @@
 return {
   {
     "mfussenegger/nvim-lint",
-    opts = {
-      linters_by_ft = {
-        crystal = { "ameba" },
-      },
-    },
+    opts = function(_, opts)
+      local lint = require("lint")
+      lint.linters.ameba = require("crystal-nvim.linters.ameba")
+      opts.linters_by_ft = opts.linters_by_ft or {}
+      opts.linters_by_ft.crystal = { "ameba" }
+    end,
   },
   {
     "stevearc/conform.nvim",
