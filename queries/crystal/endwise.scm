@@ -7,9 +7,9 @@
 ((annotation_def name: (_) @cursor) @endable @indent (#endwise! "end"))
 ((c_struct_def name: (_) @cursor) @endable @indent (#endwise! "end"))
 
-((method_def name: (_) @cursor params: (param_list)? @cursor) @endable @indent (#endwise! "end"))
+((method_def name: (_) @cursor params: (param_list)? @cursor type: (_)? @cursor) @endable @indent (#endwise! "end"))
 ((macro_def name: (_) @cursor params: (param_list)? @cursor) @endable @indent (#endwise! "end"))
-((fun_def name: (_) @cursor params: (param_list)? @cursor) @endable @indent (#endwise! "end"))
+((fun_def name: (_) @cursor params: (param_list)? @cursor type: (_)? @cursor) @endable @indent (#endwise! "end"))
 
 ((while cond: (_) @cursor) @endable @indent (#endwise! "end"))
 ((until cond: (_) @cursor) @endable @indent (#endwise! "end"))
@@ -28,9 +28,9 @@
 ((ERROR ("struct" @indent . [(constant) (generic_type)] @cursor . [(constant) (generic_instance_type)]? @cursor)) (#endwise! "end"))
 ((ERROR ("enum" @indent . (constant) @cursor)) (#endwise! "end"))
 ((ERROR ("lib" @indent . [(constant) (generic_type)] @cursor)) (#endwise! "end"))
-((ERROR ("def" @indent . [(identifier) (operator)] @cursor . (param_list)? @cursor)) (#endwise! "end"))
+((ERROR ("def" @indent . [(identifier) (operator)] @cursor . (param_list)? @cursor . (_)? @cursor)) (#endwise! "end"))
 ((ERROR ("macro" @indent . [(identifier) (operator)] @cursor . (param_list)? @cursor)) (#endwise! "end"))
-((ERROR ("fun" @indent . [(identifier) (constant)] @cursor . (param_list)? @cursor)) (#endwise! "end"))
+((ERROR ("fun" @indent . [(identifier) (constant)] @cursor . (param_list)? @cursor . (_)? @cursor)) (#endwise! "end"))
 ((ERROR ("while" @indent . (_) @cursor)) (#endwise! "end"))
 ((ERROR ("until" @indent . (_) @cursor)) (#endwise! "end"))
 ((ERROR ("if" @indent . (_) @cursor . (then)? @cursor)) (#endwise! "end"))
