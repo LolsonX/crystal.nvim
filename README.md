@@ -22,15 +22,58 @@ return { "LolsonX/crystal.nvim" }
 ### Lazy (standalone)
 
 ```lua
+return {
+  "mfussenegger/nvim-lint",
+  optional = true,
+  dependencies = { "LolsonX/crystal.nvim" },
+  opts = function(_, opts)
+    local lint = require("lint")
+    lint.linters.ameba = require("crystal-nvim.linters.ameba")
+    opts.linters_by_ft = opts.linters_by_ft or {}
+    opts.linters_by_ft.crystal = { "ameba" }
+  end,
+},
 {
-  "LolsonX/crystal.nvim",
-  dependencies = {
-    "nvim-treesitter/nvim-treesitter",
-    "RRethy/nvim-treesitter-endwise",
-    "mfussenegger/nvim-lint",
-    "stevearc/conform.nvim",
+  "stevearc/conform.nvim",
+  optional = true,
+  opts = {
+    formatters_by_ft = {
+      crystal = { "crystal" },
+    },
   },
-}
+},
+{
+  "RRethy/nvim-treesitter-endwise",
+  ft = "crystal",
+},
+{
+  "nvim-treesitter/nvim-treesitter",
+  optional = true,
+  opts = {
+    ensure_installed = { "crystal" },
+  },
+},
+{
+  "nvim-treesitter/nvim-treesitter",
+  optional = true,
+  opts = function()
+    vim.treesitter.language.register("crystal", { "cr" })
+    vim.api.nvim_create_autocmd("User", {
+      pattern = "TSUpdate",
+      callback = function()
+        local parsers = require("nvim-treesitter.parsers")
+        if not parsers.crystal then
+          parsers.crystal = {
+            install_info = {
+              url = "https://github.com/crystal-lang-tools/tree-sitter-crystal",
+              queries = "queries/nvim",
+            },
+          }
+        end
+      end,
+    })
+  end,
+},
 ```
 
 ## Dependencies

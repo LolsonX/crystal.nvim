@@ -2,16 +2,8 @@ return {
   {
     "mfussenegger/nvim-lint",
     optional = true,
-    opts = {
-      linters_by_ft = {
-        crystal = { "ameba" },
-      },
-    },
-  },
-  {
-    "mfussenegger/nvim-lint",
-    optional = true,
-    config = function()
+    dependencies = { "LolsonX/crystal.nvim" },
+    opts = function(_, opts)
       local bufname = vim.api.nvim_buf_get_name(0)
       local dir = bufname ~= "" and vim.fn.fnamemodify(bufname, ":p:h") or vim.fn.getcwd()
       local local_ameba = vim.fs.joinpath(dir, "bin", "ameba")
@@ -22,6 +14,8 @@ return {
       end
       local lint = require("lint")
       lint.linters.ameba = require("crystal-nvim.linters.ameba")
+      opts.linters_by_ft = opts.linters_by_ft or {}
+      opts.linters_by_ft.crystal = { "ameba" }
     end,
   },
   {
@@ -35,8 +29,7 @@ return {
   },
   {
     "RRethy/nvim-treesitter-endwise",
-    optional = true,
-    dependencies = "nvim-treesitter/nvim-treesitter",
+    ft = "crystal",
   },
   {
     "nvim-treesitter/nvim-treesitter",
