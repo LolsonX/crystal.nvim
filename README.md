@@ -14,84 +14,18 @@ Crystal language support for Neovim.
 
 ### Option 1: Portable (any plugin manager)
 
-Just add the plugin. The `plugin/crystal.lua` file loads automatically after all plugins:
+Just add the plugin. The `plugin/crystal.lua` file runs after ALL plugins are loaded, handling all integration:
 
 ```lua
 -- lua/plugins/crystal.lua
 return { "LolsonX/crystal.nvim" }
 ```
 
-This works with lazy.nvim, LazyVim, packer,vim-plug, or any plugin manager.
+Works with lazy.nvim, LazyVim, packer.vim, vim-plug, or any plugin manager.
 
-### Option 2: LazyVim / lazy.nvim with proper integration
+### Option 2: lazy.nvim with full integration
 
-For full opts merging (linters, formatters appear in `:Lazy` and `:ConformInfo`), add the integration specs:
-
-```lua
--- lua/plugins/crystal.lua
-return {
-  {
-    "mfussenegger/nvim-lint",
-    optional = true,
-    dependencies = { "LolsonX/crystal.nvim" },
-    opts = function(_, opts)
-      local bufname = vim.api.nvim_buf_get_name(0)
-      local dir = bufname ~= "" and vim.fn.fnamemodify(bufname, ":p:h") or vim.fn.getcwd()
-      local local_ameba = vim.fs.joinpath(dir, "bin", "ameba")
-      local ameba_bin = (vim.fn.filereadable(local_ameba) == 1) and local_ameba or "ameba"
-      if vim.fn.executable(ameba_bin) == 0 then
-        vim.notify_once("ameba not found. Crystal linting disabled. Install: https://github.com/crystal-ameba/ameba", vim.log.levels.WARN)
-        return
-      end
-      local lint = require("lint")
-      lint.linters.ameba = require("crystal-nvim.linters.ameba")
-      opts.linters_by_ft = opts.linters_by_ft or {}
-      opts.linters_by_ft.crystal = { "ameba" }
-    end,
-  },
-  {
-    "stevearc/conform.nvim",
-    optional = true,
-    opts = {
-      formatters_by_ft = {
-        crystal = { "crystal" },
-      },
-    },
-  },
-  {
-    "RRethy/nvim-treesitter-endwise",
-    ft = "crystal",
-  },
-  {
-    "nvim-treesitter/nvim-treesitter",
-    optional = true,
-    opts = {
-      ensure_installed = { "crystal" },
-    },
-  },
-  {
-    "nvim-treesitter/nvim-treesitter",
-    optional = true,
-    opts = function()
-      vim.treesitter.language.register("crystal", { "cr" })
-      vim.api.nvim_create_autocmd("User", {
-        pattern = "TSUpdate",
-        callback = function()
-          local parsers = require("nvim-treesitter.parsers")
-          if not parsers.crystal then
-            parsers.crystal = {
-              install_info = {
-                url = "https://github.com/crystal-lang-tools/tree-sitter-crystal",
-                queries = "queries/nvim",
-              },
-            }
-          end
-        end,
-      })
-    end,
-  },
-}
-```
+The portable approach above works everywhere. No extra configuration needed.
 
 ## Dependencies
 
@@ -112,8 +46,34 @@ crystal.nvim/
 │   └── queries/
 │       └── crystal/
 │           └── endwise.scm  -- Endwise queries for Crystal syntax
-└── lua/
-    └── crystal-nvim/
-        └── linters/
-            └── ameba.lua    -- Ameba linter definition for nvim-lint
+├── lua/
+│   └── crystal-nvim/
+│       └── linters/
+│           └── ameba.lua   -- Ameba linter definition for nvim-lint
+└── README.md
 ```
+
+## Manual integration (if needed)
+
+If you prefer to manage integrations explicitly, you can also add these configs manually:
+
+**Linting**:
+```lua
+-- Add to your lint.linters_by_ft.crystal
+lint.linters_by_ft.crystal = lint.linters_by_ft.crystal or {}
+table.insert(lint.linters_by_ft.crystal, "ameba")
+```
+
+**Formatting**:
+```lua
+-- Add to your conform.formatters_by_ft.crystal
+conform.formatters_by_ft.crystal = conform.formatters_by_ft.crystal or {}
+table.insert(conform.formatters_by_ft.crystal, "crystal")
+```
+
+**Treesitter**:
+```lua
+vim.treesitter.language.register("crystal", { "cr" })
+```
+
+Queries from `runtime/queries/crystal/endwise.scm` will be automatically discovered by Neovim's query system since they're placed in the standard `runtime/queries/` directory.
