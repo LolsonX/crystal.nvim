@@ -30,9 +30,6 @@ return { "LolsonX/crystal.nvim" }
     "mfussenegger/nvim-lint",
     "stevearc/conform.nvim",
   },
-  config = function()
-    require("crystal-nvim.autocmds").setup()
-  end,
 }
 ```
 
@@ -51,8 +48,7 @@ return { "LolsonX/crystal.nvim" }
 ```
 crystal.nvim/
 ├── lua/crystal-nvim/
-│   ├── init.lua        -- Plugin specs (lint, conform, treesitter, endwise)
-│   └── autocmds.lua    -- Treesitter parser override + .cr filetype registration
+│   └── init.lua        -- Plugin specs (lint, conform, treesitter, endwise)
 └── queries/crystal/
     └── endwise.scm     -- Endwise queries for Crystal syntax
 ```
