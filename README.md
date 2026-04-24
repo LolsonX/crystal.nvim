@@ -108,9 +108,12 @@ return {
 crystal.nvim/
 ├── plugin/
 │   └── crystal.lua           -- Portable integration (loads after all plugins)
-├── lua/crystal-nvim/
-│   └── linters/
-│       └── ameba.lua         -- Ameba linter definition for nvim-lint
-└── queries/crystal/
-    └── endwise.scm          -- Endwise queries for Crystal syntax
+├── runtime/
+│   └── queries/
+│       └── crystal/
+│           └── endwise.scm  -- Endwise queries for Crystal syntax
+└── lua/
+    └── crystal-nvim/
+        └── linters/
+            └── ameba.lua    -- Ameba linter definition for nvim-lint
 ```
