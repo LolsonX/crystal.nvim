@@ -14,11 +14,10 @@ return {
   },
   {
     "stevearc/conform.nvim",
-    opts = {
-      formatters_by_ft = {
-        crystal = { "crystal" },
-      },
-    },
+    opts = function(_, opts)
+      opts.formatters_by_ft = opts.formatters_by_ft or {}
+      opts.formatters_by_ft.crystal = { "crystal" }
+    end,
   },
   {
     "RRethy/nvim-treesitter-endwise",
@@ -27,17 +26,23 @@ return {
   {
     "nvim-treesitter/nvim-treesitter",
     opts = function(_, opts)
-      opts.parser_config = opts.parser_config or {}
-      opts.parser_config.crystal = {
-        install_info = {
-          url = "https://github.com/crystal-lang-tools/tree-sitter-crystal",
-          generate = false,
-          generate_from_json = false,
-          queries = "queries/nvim",
-        },
-      }
       vim.list_extend(opts.ensure_installed, { "crystal" })
       vim.treesitter.language.register("crystal", { "cr" })
+
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "TSUpdate",
+        callback = function()
+          local parsers = require("nvim-treesitter.parsers")
+          if not parsers.crystal then
+            parsers.crystal = {
+              install_info = {
+                url = "https://github.com/crystal-lang-tools/tree-sitter-crystal",
+                queries = "queries/nvim",
+              },
+            }
+          end
+        end,
+      })
     end,
   },
 }
