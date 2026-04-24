@@ -12,9 +12,20 @@ Crystal language support for Neovim.
 
 ## Installation
 
-### LazyVim / Lazy.nvim
+### Option 1: Portable (any plugin manager)
 
-Add the plugin and the specs to your `lua/plugins/` directory:
+Just add the plugin. The `plugin/crystal.lua` file loads automatically after all plugins:
+
+```lua
+-- lua/plugins/crystal.lua
+return { "LolsonX/crystal.nvim" }
+```
+
+This works with lazy.nvim, LazyVim, packer,vim-plug, or any plugin manager.
+
+### Option 2: LazyVim / lazy.nvim with proper integration
+
+For full opts merging (linters, formatters appear in `:Lazy` and `:ConformInfo`), add the integration specs:
 
 ```lua
 -- lua/plugins/crystal.lua
@@ -82,13 +93,6 @@ return {
 }
 ```
 
-Then add the plugin itself:
-
-```lua
--- lua/plugins/crystal.nvim.lua (or in your existing plugin file)
-return { "LolsonX/crystal.nvim" }
-```
-
 ## Dependencies
 
 | Plugin | Purpose |
@@ -102,9 +106,11 @@ return { "LolsonX/crystal.nvim" }
 
 ```
 crystal.nvim/
+├── plugin/
+│   └── crystal.lua           -- Portable integration (loads after all plugins)
 ├── lua/crystal-nvim/
 │   └── linters/
-│       └── ameba.lua  -- Ameba linter definition for nvim-lint
+│       └── ameba.lua         -- Ameba linter definition for nvim-lint
 └── queries/crystal/
-    └── endwise.scm   -- Endwise queries for Crystal syntax
+    └── endwise.scm          -- Endwise queries for Crystal syntax
 ```
