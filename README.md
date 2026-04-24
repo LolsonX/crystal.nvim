@@ -18,7 +18,7 @@ Just add the plugin. The `plugin/crystal.lua` file runs after ALL plugins are lo
 
 ```lua
 -- lua/plugins/crystal.lua
-return { "LolsonX/crystal.nvim" }
+return { "LolsonX/crystal.nvim", dependencies: { "RRethy/nvim-treesitter-endwise" } }
 ```
 
 Works with lazy.nvim, LazyVim, packer.vim, vim-plug, or any plugin manager.
