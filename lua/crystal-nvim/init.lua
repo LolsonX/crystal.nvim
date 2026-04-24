@@ -2,6 +2,10 @@ return {
   {
     "mfussenegger/nvim-lint",
     opts = function(_, opts)
+      if vim.fn.executable("ameba") == 0 then
+        vim.notify_once("ameba not found. Crystal linting disabled. Install: https://github.com/crystal-ameba/ameba", vim.log.levels.WARN)
+        return
+      end
       local lint = require("lint")
       lint.linters.ameba = require("crystal-nvim.linters.ameba")
       opts.linters_by_ft = opts.linters_by_ft or {}
