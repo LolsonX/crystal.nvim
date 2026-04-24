@@ -1,6 +1,7 @@
 return {
   {
     "mfussenegger/nvim-lint",
+    optional = true,
     opts = {
       linters_by_ft = {
         crystal = { "ameba" },
@@ -9,15 +10,14 @@ return {
   },
   {
     "mfussenegger/nvim-lint",
-    opts = function(_, opts)
+    optional = true,
+    config = function()
       local bufname = vim.api.nvim_buf_get_name(0)
       local dir = bufname ~= "" and vim.fn.fnamemodify(bufname, ":p:h") or vim.fn.getcwd()
       local local_ameba = vim.fs.joinpath(dir, "bin", "ameba")
       local ameba_bin = (vim.fn.filereadable(local_ameba) == 1) and local_ameba or "ameba"
       if vim.fn.executable(ameba_bin) == 0 then
         vim.notify_once("ameba not found. Crystal linting disabled. Install: https://github.com/crystal-ameba/ameba", vim.log.levels.WARN)
-        opts.linters_by_ft = opts.linters_by_ft or {}
-        opts.linters_by_ft.crystal = nil
         return
       end
       local lint = require("lint")
@@ -26,6 +26,7 @@ return {
   },
   {
     "stevearc/conform.nvim",
+    optional = true,
     opts = {
       formatters_by_ft = {
         crystal = { "crystal" },
@@ -34,16 +35,19 @@ return {
   },
   {
     "RRethy/nvim-treesitter-endwise",
+    optional = true,
     dependencies = "nvim-treesitter/nvim-treesitter",
   },
   {
     "nvim-treesitter/nvim-treesitter",
+    optional = true,
     opts = {
       ensure_installed = { "crystal" },
     },
   },
   {
     "nvim-treesitter/nvim-treesitter",
+    optional = true,
     opts = function()
       vim.treesitter.language.register("crystal", { "cr" })
       vim.api.nvim_create_autocmd("User", {
