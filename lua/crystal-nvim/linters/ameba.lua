@@ -7,7 +7,15 @@ M.meta = {
   description = "A static code analysis tool for Crystal",
 }
 
-M.cmd = "ameba"
+M.cmd = function()
+  local bufname = vim.api.nvim_buf_get_name(0)
+  local dir = bufname ~= "" and vim.fn.fnamemodify(bufname, ":p:h") or vim.fn.getcwd()
+  local local_ameba = vim.fs.joinpath(dir, "bin", "ameba")
+  if vim.fn.filereadable(local_ameba) == 1 then
+    return local_ameba
+  end
+  return "ameba"
+end
 
 M.args = {
   "--format",
