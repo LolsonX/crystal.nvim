@@ -7,7 +7,7 @@
 ((annotation_def name: (_) @cursor) @endable @indent (#endwise! "end"))
 ((c_struct_def name: (_) @cursor) @endable @indent (#endwise! "end"))
 
-((method_def name: (_) @cursor params: (param_list)? @cursor type: (_)? ")"? @cursor) @endable @indent (#endwise! "end"))
+((method_def name: (_) @cursor params: (param_list)? @cursor type: (_)? @cursor ")"? @cursor) @endable @indent (#endwise! "end"))
 ((macro_def name: (_) @cursor params: (param_list)? ")"? @cursor) @endable @indent (#endwise! "end"))
 ((fun_def name: (_) @cursor params: (param_list)? ")"? @cursor type: (_)? @cursor) @endable @indent (#endwise! "end"))
 
