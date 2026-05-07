@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      DEPS_DIR: /tmp/nvim-deps
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim
+        run: |
+          curl -LO https://github.com/neovim/neovim/releases/download/v0.12.2/nvim-linux-x86_64.tar.gz
+          tar xzf nvim-linux-x86_64.tar.gz
+          echo "$PWD/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y gcc
+
+      - name: Install plenary.nvim
+        run: git clone --depth 1 https://github.com/nvim-lua/plenary.nvim.git "$DEPS_DIR/plenary.nvim"
+
+      - name: Compile Crystal TS parser
+        run: |
+          git clone --depth 1 https://github.com/crystal-lang-tools/tree-sitter-crystal.git "$DEPS_DIR/tree-sitter-crystal"
+          cd "$DEPS_DIR/tree-sitter-crystal"
+          gcc -shared -fPIC -o crystal.so src/parser.c src/scanner.c src/unicode.c -I src -O2
+          mkdir -p "$HOME/.local/share/nvim/site/parser"
+          cp crystal.so "$HOME/.local/share/nvim/site/parser/"
+
+      - name: Run tests
+        run: nvim --headless -u tests/ci_init.lua -c "PlenaryBustedFile tests/endwise_spec.lua"
+        env:
+          DEPS_DIR: /tmp/nvim-deps
