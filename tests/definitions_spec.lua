@@ -164,6 +164,7 @@ describe("Crystal definitions", function()
 
     assert.equals("Select Crystal definition", selected.options.prompt)
     assert.equals(2, #selected.items)
+    assert.matches("class Widget", selected.options.format_item(selected.items[1]))
     assert.equals(root .. "/src/other.cr", vim.api.nvim_buf_get_name(0))
   end)
 

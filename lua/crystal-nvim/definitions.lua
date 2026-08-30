@@ -81,6 +81,7 @@ local function add_symbol(index, node, source, path, kind, owner, routine)
   end
 
   local sr, sc, er, ec = node:range()
+  local preview = vim.treesitter.get_node_text(node, source):match("[^\r\n]+") or name
   local symbol = {
     name = name,
     full_name = full_name,
@@ -92,6 +93,7 @@ local function add_symbol(index, node, source, path, kind, owner, routine)
     end_row = er,
     end_col = ec,
     routine = routine,
+    preview = vim.trim(preview),
   }
   if kind == "variable" then
     local rhs = node:field("rhs")[1]
@@ -357,7 +359,7 @@ function M.jump(bufnr)
   vim.ui.select(targets, {
     prompt = "Select Crystal definition",
     format_item = function(target)
-      return string.format("%s %s - %s:%d", target.kind, target.full_name, vim.fn.fnamemodify(target.path, ":."), target.row + 1)
+      return string.format("%s  %s:%d", target.preview, vim.fn.fnamemodify(target.path, ":."), target.row + 1)
     end,
   }, function(target)
     if target then

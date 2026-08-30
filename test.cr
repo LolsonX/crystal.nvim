@@ -17,6 +17,10 @@ module ManualDefinitions
       puts VERSION
     end
 
+    def render(other : String)
+      puts other
+    end
+
     def render_again
       render
     end
