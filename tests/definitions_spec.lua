@@ -273,6 +273,29 @@ describe("Crystal definitions", function()
     assert.equals(1, target.row)
   end)
 
+  it("resolves method arguments", function()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "class Local",
+      "  def render(value : String, count = 1)",
+      "    value",
+      "    count",
+      "  end",
+      "end",
+    })
+
+    vim.api.nvim_win_set_cursor(0, { 3, 5 })
+    local value = definitions.find(buffer)
+    assert.equals("value", value.name)
+    assert.equals("parameter", value.kind)
+    assert.equals(1, value.row)
+
+    vim.api.nvim_win_set_cursor(0, { 4, 5 })
+    local count = definitions.find(buffer)
+    assert.equals("count", count.name)
+    assert.equals("parameter", count.kind)
+    assert.equals(1, count.row)
+  end)
+
   it("refuses an instance receiver that needs type inference", function()
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
       "class Local",

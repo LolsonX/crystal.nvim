@@ -46,7 +46,7 @@ require("crystal-nvim").setup({
 
 ### Definitions
 
-`gd` finds Crystal declarations under the nearest `shard.yml` (falling back to `.git`). It indexes classes, modules, structs, enums, libs, unions, annotations, constants, methods, macros, and `fun` declarations. Local variables resolve to their nearest assignment. Instance methods resolve when their receiver was directly created with `Type.new`; ambiguous names and receivers that need further type inference do not jump.
+`gd` finds Crystal declarations under the nearest `shard.yml` (falling back to `.git`). It indexes classes, modules, structs, enums, libs, unions, annotations, constants, methods, macros, and `fun` declarations. Local variables and method arguments resolve to their nearest declaration. Instance methods resolve when their receiver was directly created with `Type.new`; ambiguous names and receivers that need further type inference do not jump.
 
 The index reads project source and unsaved open buffers. It does not start an LSP client, compile the project, edit source text, or write files.
 

@@ -108,6 +108,39 @@ local function add_symbol(index, node, source, path, kind, owner, routine)
   return symbol
 end
 
+local function add_parameters(index, method, source)
+  local header = vim.split(source, "\n", { plain = true })[method.row + 1] or ""
+  local parameters = header:match("%b()")
+  if not parameters then
+    return
+  end
+
+  local offset = 1
+  for parameter in parameters:sub(2, -2):gmatch("[^,]+") do
+    local name = parameter:match("^%s*[*&]*%s*([a-z_][%w_]*)")
+    if name then
+      local start = header:find(name, offset, true)
+      local symbol = {
+        name = name,
+        full_name = method.full_name .. "." .. name,
+        kind = "parameter",
+        owner = method.full_name,
+        path = method.path,
+        row = method.row,
+        col = start and start - 1 or method.col,
+        end_row = method.row,
+        end_col = start and start - 1 + #name or method.col + #name,
+        routine = method,
+        preview = vim.trim(header),
+      }
+      table.insert(index.symbols, symbol)
+      index.by_name[name] = index.by_name[name] or {}
+      table.insert(index.by_name[name], symbol)
+      offset = start and start + #name or offset
+    end
+  end
+end
+
 local function parse_source(index, source, path)
   local ok, parser = pcall(vim.treesitter.get_string_parser, source, "crystal")
   if not ok then
@@ -121,6 +154,9 @@ local function parse_source(index, source, path)
   local function visit(node, owner, routine)
     local kind = declaration_kinds[node:type()]
     local symbol = kind and add_symbol(index, node, source, path, kind, owner, routine)
+    if symbol and kind == "method" then
+      add_parameters(index, symbol, source)
+    end
     local child_owner = symbol and scope_kinds[kind] and symbol.full_name or owner
     local child_routine = symbol and (kind == "method" or kind == "macro" or kind == "fun") and symbol or routine
 
@@ -217,7 +253,7 @@ local function local_variable(index, path, row, name)
   local routine = routine_at(index, path, row)
   local nearest
   for _, symbol in ipairs(index.by_name[name] or {}) do
-    if symbol.kind == "variable" and symbol.path == path and symbol.routine == routine and symbol.row <= row and (not nearest or symbol.row > nearest.row) then
+    if (symbol.kind == "variable" or symbol.kind == "parameter") and symbol.path == path and symbol.routine == routine and symbol.row <= row and (not nearest or symbol.row > nearest.row) then
       nearest = symbol
     end
   end

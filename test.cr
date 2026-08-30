@@ -17,6 +17,10 @@ module ManualDefinitions
       puts VERSION
     end
 
+    def render_with(prefix : String)
+      puts "#{prefix} #{VERSION}"
+    end
+
     def render(other : String)
       puts other
     end
@@ -54,4 +58,5 @@ end
 # Receivers with no directly known constructor type intentionally do not jump.
 # On either Widget.new call, gd on new resolves Widget#initialize.
 # On ManualDefinitions::Trace in the annotation above, gd resolves Trace.
+# Inside render_with, gd on prefix resolves its method argument.
 widget.render
