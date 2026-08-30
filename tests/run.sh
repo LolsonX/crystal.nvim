@@ -8,5 +8,6 @@ if [[ -n "${DEPS_DIR:-}" ]]; then
 fi
 
 nvim --headless -u "$INIT_FILE" -c "PlenaryBustedFile $SCRIPT_DIR/setup_spec.lua" "$@"
+nvim --headless -u "$INIT_FILE" -c "PlenaryBustedFile $SCRIPT_DIR/definitions_spec.lua" "$@"
 nvim --headless -u "$INIT_FILE" -c "PlenaryBustedFile $SCRIPT_DIR/ameba_spec.lua" "$@"
 nvim --headless -u "$INIT_FILE" -c "PlenaryBustedFile $SCRIPT_DIR/endwise_spec.lua" "$@"

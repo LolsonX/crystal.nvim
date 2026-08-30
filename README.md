@@ -8,6 +8,7 @@ Crystal language support for Neovim.
 - **Formatting**: `crystal tool format` via [conform.nvim](https://github.com/stevearc/conform.nvim)
 - **Treesitter**: Crystal parser from [crystal-lang-tools/tree-sitter-crystal](https://github.com/crystal-lang-tools/tree-sitter-crystal)
 - **Endwise**: Auto-insert `end` keywords via [nvim-treesitter-endwise](https://github.com/RRethy/nvim-treesitter-endwise) with Crystal-specific queries
+- **Definitions**: Project-local `gd` for declarations, without an LSP client
 - **Filetypes**: `crystal` and `.cr` files
 
 ## Installation
@@ -39,8 +40,15 @@ require("crystal-nvim").setup({
   lint = false,
   format = false,
   treesitter = true,
+  definitions = true,
 })
 ```
+
+### Definitions
+
+`gd` finds Crystal declarations under the nearest `shard.yml` (falling back to `.git`). It indexes classes, modules, structs, enums, libs, unions, annotations, constants, methods, macros, and `fun` declarations. Resolution is conservative: ambiguous names and instance-method dispatches that need type inference do not jump.
+
+The index reads project source and unsaved open buffers. It does not start an LSP client, compile the project, edit source text, or write files.
 
 The plugin registers integrations only. Configure nvim-lint to run linting and Conform to format on your preferred events or mappings.
 

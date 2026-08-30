@@ -4,6 +4,7 @@ local defaults = {
   lint = true,
   format = true,
   treesitter = true,
+  definitions = true,
 }
 
 local function append_unique(items, item)
@@ -71,6 +72,9 @@ function M.setup(options)
   end
   if options.treesitter then
     require("crystal-nvim.treesitter").setup()
+  end
+  if options.definitions then
+    require("crystal-nvim.definitions").setup()
   end
 end
 
