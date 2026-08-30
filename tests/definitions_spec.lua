@@ -25,6 +25,9 @@ describe("Crystal definitions", function()
     write(root .. "/src/types.cr", {
       "module App",
       "  class Widget",
+      "    def initialize",
+      "    end",
+      "",
       "    def render",
       "    end",
       "  end",
@@ -62,6 +65,15 @@ describe("Crystal definitions", function()
   end)
 
   after_each(function()
+    if vim.api.nvim_buf_is_valid(buffer) then
+      vim.api.nvim_set_current_buf(buffer)
+    end
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+      local name = vim.api.nvim_buf_get_name(bufnr)
+      if bufnr ~= buffer and name:sub(1, #root + 1) == root .. "/" then
+        vim.api.nvim_buf_delete(bufnr, { force = true })
+      end
+    end
     if vim.api.nvim_buf_is_valid(buffer) then
       vim.api.nvim_buf_delete(buffer, { force = true })
     end
@@ -135,6 +147,26 @@ describe("Crystal definitions", function()
     assert.is_nil(definitions.find(buffer))
   end)
 
+  it("presents ambiguous definitions and jumps to the selected one", function()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "Widget.new" })
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    local original_select = vim.ui.select
+    local selected
+    vim.ui.select = function(items, options, callback)
+      selected = { items = items, options = options }
+      callback(vim.tbl_filter(function(item)
+        return item.path == root .. "/src/other.cr"
+      end, items)[1])
+    end
+
+    assert.is_true(definitions.jump(buffer))
+    vim.ui.select = original_select
+
+    assert.equals("Select Crystal definition", selected.options.prompt)
+    assert.equals(2, #selected.items)
+    assert.equals(root .. "/src/other.cr", vim.api.nvim_buf_get_name(0))
+  end)
+
   it("resolves a qualified class name outside its namespace", function()
     vim.api.nvim_buf_set_name(buffer, root .. "/src/external.cr")
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "App::Widget.new" })
@@ -143,6 +175,18 @@ describe("Crystal definitions", function()
     local target = definitions.find(buffer)
     assert.equals("Widget", target.name)
     assert.equals(root .. "/src/types.cr", target.path)
+  end)
+
+  it("resolves Type.new to Type#initialize", function()
+    vim.api.nvim_buf_set_name(buffer, root .. "/src/external.cr")
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "App::Widget.new" })
+    vim.api.nvim_win_set_cursor(0, { 1, 14 })
+
+    local target = definitions.find(buffer)
+    assert.equals("initialize", target.name)
+    assert.equals("method", target.kind)
+    assert.equals(root .. "/src/types.cr", target.path)
+    assert.equals(2, target.row)
   end)
 
   it("resolves the qualifier or class under the cursor", function()

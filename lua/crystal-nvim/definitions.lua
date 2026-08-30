@@ -277,71 +277,93 @@ local function token_at_cursor(bufnr)
   end
 end
 
-function M.find(bufnr)
+function M.candidates(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(bufnr)
   if path == "" then
-    return nil
+    return {}
   end
   local name, receiver, qualified_name = token_at_cursor(bufnr)
   if not name then
-    return nil
+    return {}
   end
 
   local absolute = vim.fn.fnamemodify(path, ":p")
   local index = index_project(M.root(absolute), bufnr)
   local row = vim.api.nvim_win_get_cursor(0)[1] - 1
   local scopes = scopes_at(index, absolute, row)
+  local method_name = name == "new" and "initialize" or name
 
   if name:match("^[A-Z]") then
     if qualified_name then
-      return one(index.by_full[normalize_name(qualified_name)])
+      return index.by_full[normalize_name(qualified_name)] or {}
     end
     for _, scope in ipairs(scopes) do
-      local match = one(index.by_full[scope.full_name .. "::" .. name])
-      if match then
-        return match
+      local matches = index.by_full[scope.full_name .. "::" .. name]
+      if matches then
+        return matches
       end
     end
   else
     if receiver and receiver ~= "self" then
       if receiver:match("^[A-Z]") then
-        return one(index.by_full[normalize_name(receiver) .. "." .. name])
+        return index.by_full[inferred_type(index, scopes, receiver) .. "." .. method_name] or {}
       end
       local variable = local_variable(index, absolute, row, receiver)
       if variable and variable.value_type then
-        return one(index.by_full[inferred_type(index, scopes, variable.value_type) .. "." .. name])
+        return index.by_full[inferred_type(index, scopes, variable.value_type) .. "." .. method_name] or {}
       end
-      return nil
+      return {}
     end
     local variable = local_variable(index, absolute, row, name)
     if variable then
-      return variable
+      return { variable }
     end
     for _, scope in ipairs(scopes) do
-      local match = one(index.by_full[scope.full_name .. "." .. name])
-      if match then
-        return match
+      local matches = index.by_full[scope.full_name .. "." .. name]
+      if matches then
+        return matches
       end
     end
   end
 
-  return one(index.by_name[name])
+  return index.by_name[name] or {}
 end
 
-function M.jump(bufnr)
-  local target = M.find(bufnr)
-  if not target then
-    vim.notify("crystal.nvim: definition not found", vim.log.levels.INFO)
-    return false
-  end
+function M.find(bufnr)
+  return one(M.candidates(bufnr))
+end
 
+local function jump_to(target)
   local ok, err = pcall(vim.cmd.edit, vim.fn.fnameescape(target.path))
   if not ok then
     vim.notify("crystal.nvim: could not open definition: " .. err, vim.log.levels.WARN)
     return false
   end
   vim.api.nvim_win_set_cursor(0, { target.row + 1, target.col })
+  return true
+end
+
+function M.jump(bufnr)
+  local targets = M.candidates(bufnr)
+  if #targets == 0 then
+    vim.notify("crystal.nvim: definition not found", vim.log.levels.INFO)
+    return false
+  end
+  if #targets == 1 then
+    return jump_to(targets[1])
+  end
+
+  vim.ui.select(targets, {
+    prompt = "Select Crystal definition",
+    format_item = function(target)
+      return string.format("%s %s - %s:%d", target.kind, target.full_name, vim.fn.fnamemodify(target.path, ":."), target.row + 1)
+    end,
+  }, function(target)
+    if target then
+      jump_to(target)
+    end
+  end)
   return true
 end
 
