@@ -13,6 +13,7 @@ local declaration_kinds = {
   fun_def = "fun",
   top_level_fun_def = "fun",
   const_assign = "constant",
+  assign = "variable",
 }
 
 local scope_kinds = {
@@ -51,8 +52,8 @@ local function join_scope(scope, name)
   return scope and scope ~= "" and scope .. "::" .. name or name
 end
 
-local function add_symbol(index, node, source, path, kind, owner)
-  local field = kind == "constant" and "lhs" or "name"
+local function add_symbol(index, node, source, path, kind, owner, routine)
+  local field = (kind == "constant" or kind == "variable") and "lhs" or "name"
   local name_node = node:field(field)[1]
   if not name_node then
     return nil
@@ -90,7 +91,13 @@ local function add_symbol(index, node, source, path, kind, owner)
     col = sc,
     end_row = er,
     end_col = ec,
+    routine = routine,
   }
+  if kind == "variable" then
+    local rhs = node:field("rhs")[1]
+    local value = rhs and vim.treesitter.get_node_text(rhs, source) or ""
+    symbol.value_type = value:match("^%s*([A-Z][%w_:]*)%.new%f[%W]")
+  end
   table.insert(index.symbols, symbol)
   index.by_full[full_name] = index.by_full[full_name] or {}
   table.insert(index.by_full[full_name], symbol)
@@ -109,13 +116,14 @@ local function parse_source(index, source, path)
     return
   end
 
-  local function visit(node, owner)
+  local function visit(node, owner, routine)
     local kind = declaration_kinds[node:type()]
-    local symbol = kind and add_symbol(index, node, source, path, kind, owner)
+    local symbol = kind and add_symbol(index, node, source, path, kind, owner, routine)
     local child_owner = symbol and scope_kinds[kind] and symbol.full_name or owner
+    local child_routine = symbol and (kind == "method" or kind == "macro" or kind == "fun") and symbol or routine
 
     for child in node:iter_children() do
-      visit(child, child_owner)
+      visit(child, child_owner, child_routine)
     end
   end
 
@@ -193,6 +201,40 @@ local function scopes_at(index, path, row)
   return scopes
 end
 
+local function routine_at(index, path, row)
+  local routine
+  for _, symbol in ipairs(index.symbols) do
+    if symbol.path == path and (symbol.kind == "method" or symbol.kind == "macro" or symbol.kind == "fun") and symbol.row <= row and row <= symbol.end_row and (not routine or symbol.row > routine.row) then
+      routine = symbol
+    end
+  end
+  return routine
+end
+
+local function local_variable(index, path, row, name)
+  local routine = routine_at(index, path, row)
+  local nearest
+  for _, symbol in ipairs(index.by_name[name] or {}) do
+    if symbol.kind == "variable" and symbol.path == path and symbol.routine == routine and symbol.row <= row and (not nearest or symbol.row > nearest.row) then
+      nearest = symbol
+    end
+  end
+  return nearest
+end
+
+local function inferred_type(index, scopes, name)
+  if name:find("::", 1, true) then
+    return normalize_name(name)
+  end
+  for _, scope in ipairs(scopes) do
+    local candidate = scope.full_name .. "::" .. name
+    if index.by_full[candidate] then
+      return candidate
+    end
+  end
+  return name
+end
+
 local function token_at_cursor(bufnr)
   local cursor = vim.api.nvim_win_get_cursor(0)
   local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1] or ""
@@ -204,7 +246,20 @@ local function token_at_cursor(bufnr)
     while start do
       if column >= start - 1 and column < finish then
         local receiver = line:sub(1, start - 1):match("([%w_:]+)%s*%.$")
-        return line:sub(start, finish), receiver
+        local token = line:sub(start, finish)
+        if token:find("::", 1, true) then
+          local segment_start = 1
+          while segment_start <= #token do
+            local segment_end = token:find("::", segment_start, true) or (#token + 1)
+            local absolute_start = start + segment_start - 1
+            local absolute_end = start + segment_end - 2
+            if column >= absolute_start - 1 and column < absolute_end then
+              return token:sub(segment_start, segment_end - 1), receiver, token:sub(1, segment_end - 1)
+            end
+            segment_start = segment_end + 2
+          end
+        end
+        return token, receiver
       end
       start, finish = line:find(pattern, finish + 1)
     end
@@ -228,7 +283,7 @@ function M.find(bufnr)
   if path == "" then
     return nil
   end
-  local name, receiver = token_at_cursor(bufnr)
+  local name, receiver, qualified_name = token_at_cursor(bufnr)
   if not name then
     return nil
   end
@@ -239,8 +294,8 @@ function M.find(bufnr)
   local scopes = scopes_at(index, absolute, row)
 
   if name:match("^[A-Z]") then
-    if name:find("::", 1, true) then
-      return one(index.by_full[normalize_name(name)])
+    if qualified_name then
+      return one(index.by_full[normalize_name(qualified_name)])
     end
     for _, scope in ipairs(scopes) do
       local match = one(index.by_full[scope.full_name .. "::" .. name])
@@ -253,7 +308,15 @@ function M.find(bufnr)
       if receiver:match("^[A-Z]") then
         return one(index.by_full[normalize_name(receiver) .. "." .. name])
       end
+      local variable = local_variable(index, absolute, row, receiver)
+      if variable and variable.value_type then
+        return one(index.by_full[inferred_type(index, scopes, variable.value_type) .. "." .. name])
+      end
       return nil
+    end
+    local variable = local_variable(index, absolute, row, name)
+    if variable then
+      return variable
     end
     for _, scope in ipairs(scopes) do
       local match = one(index.by_full[scope.full_name .. "." .. name])

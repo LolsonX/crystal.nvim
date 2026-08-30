@@ -145,6 +145,72 @@ describe("Crystal definitions", function()
     assert.equals(root .. "/src/types.cr", target.path)
   end)
 
+  it("resolves the qualifier or class under the cursor", function()
+    vim.api.nvim_buf_set_name(buffer, root .. "/src/external.cr")
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "App::Widget.new" })
+
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    local module = definitions.find(buffer)
+    assert.equals("App", module.name)
+    assert.equals("module", module.kind)
+
+    vim.api.nvim_win_set_cursor(0, { 1, 7 })
+    local class = definitions.find(buffer)
+    assert.equals("Widget", class.name)
+    assert.equals("class", class.kind)
+  end)
+
+  it("resolves local variables and methods on directly constructed values", function()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "widget = App::Widget.new",
+      "widget",
+      "widget.render",
+    })
+
+    vim.api.nvim_win_set_cursor(0, { 2, 1 })
+    local variable = definitions.find(buffer)
+    assert.equals("widget", variable.name)
+    assert.equals("variable", variable.kind)
+    assert.equals(0, variable.row)
+
+    vim.api.nvim_win_set_cursor(0, { 3, 8 })
+    local method = definitions.find(buffer)
+    assert.equals("render", method.name)
+    assert.equals("method", method.kind)
+    assert.equals(root .. "/src/types.cr", method.path)
+  end)
+
+  it("resolves an unqualified constructor through the current namespace", function()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "module App",
+      "  widget = Widget.new",
+      "  widget.render",
+      "end",
+    })
+    vim.api.nvim_win_set_cursor(0, { 3, 9 })
+
+    local method = definitions.find(buffer)
+    assert.equals("render", method.name)
+    assert.equals(root .. "/src/types.cr", method.path)
+  end)
+
+  it("does not use a local variable from a sibling method", function()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "class Local",
+      "  def first",
+      "    widget = App::Widget.new",
+      "  end",
+      "",
+      "  def second",
+      "    widget.render",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_win_set_cursor(0, { 7, 10 })
+
+    assert.is_nil(definitions.find(buffer))
+  end)
+
   it("resolves a method in its enclosing type", function()
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
       "class Local",
