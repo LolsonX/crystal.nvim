@@ -10,12 +10,8 @@ package.path = table.concat({
 
 local function load_plugin(lint, conform)
   package.loaded["crystal-nvim"] = nil
-  package.preload.lint = function()
-    return lint
-  end
-  package.preload.conform = function()
-    return conform
-  end
+  package.preload.lint = lint and function() return lint end or nil
+  package.preload.conform = conform and function() return conform end or nil
 
   return require("crystal-nvim")
 end
@@ -25,6 +21,8 @@ describe("crystal-nvim.setup", function()
   local conform
 
   before_each(function()
+    pcall(vim.api.nvim_del_augroup_by_name, "CrystalNvimDefinitions")
+    pcall(vim.api.nvim_del_augroup_by_name, "CrystalNvimTreesitter")
     package.loaded.lint = nil
     package.loaded.conform = nil
     lint = {
@@ -42,6 +40,7 @@ describe("crystal-nvim.setup", function()
     package.preload["nvim-treesitter.parsers"] = nil
     package.loaded["nvim-treesitter.parsers"] = nil
     package.loaded["crystal-nvim.treesitter"] = nil
+    package.loaded["crystal-nvim.definitions"] = nil
   end)
 
   it("adds Ameba and the Crystal formatter", function()
@@ -80,15 +79,68 @@ describe("crystal-nvim.setup", function()
     assert.same({ "crystal" }, conform.formatters_by_ft.crystal)
   end)
 
+  it("keeps prior integrations when a later setup disables them", function()
+    local crystal = load_plugin(lint, conform)
+    crystal.setup({ format = false, treesitter = false, definitions = false })
+    crystal.setup({ lint = false, format = false, treesitter = false, definitions = false })
+
+    assert.same({ "ameba" }, lint.linters_by_ft.crystal)
+  end)
+
   it("respects disabled integrations", function()
+    pcall(vim.api.nvim_del_augroup_by_name, "CrystalNvimTreesitter")
+    pcall(vim.api.nvim_del_augroup_by_name, "CrystalNvimDefinitions")
+
     load_plugin(lint, conform).setup({
       lint = false,
       format = false,
       treesitter = false,
+      definitions = false,
     })
 
     assert.is_nil(lint.linters_by_ft.crystal)
     assert.is_nil(conform.formatters_by_ft.crystal)
+    assert.is_false(pcall(vim.api.nvim_get_autocmds, { group = "CrystalNvimTreesitter" }))
+    assert.is_false(pcall(vim.api.nvim_get_autocmds, { group = "CrystalNvimDefinitions" }))
+  end)
+
+  it("enables each integration independently", function()
+    load_plugin(lint, conform).setup({ format = false, treesitter = false, definitions = false })
+    assert.same({ "ameba" }, lint.linters_by_ft.crystal)
+    assert.is_nil(conform.formatters_by_ft.crystal)
+
+    lint = { linters = {}, linters_by_ft = {} }
+    conform = { formatters_by_ft = {} }
+    load_plugin(lint, conform).setup({ lint = false, treesitter = false, definitions = false })
+    assert.is_nil(lint.linters_by_ft.crystal)
+    assert.same({ "crystal" }, conform.formatters_by_ft.crystal)
+  end)
+
+  it("enables only the Tree-sitter integration", function()
+    load_plugin(lint, conform).setup({ lint = false, format = false, definitions = false })
+
+    assert.equals(1, #vim.api.nvim_get_autocmds({ group = "CrystalNvimTreesitter" }))
+    assert.is_false(pcall(vim.api.nvim_get_autocmds, { group = "CrystalNvimDefinitions" }))
+  end)
+
+  it("enables only the definitions integration", function()
+    load_plugin(lint, conform).setup({ lint = false, format = false, treesitter = false })
+
+    assert.equals(1, #vim.api.nvim_get_autocmds({ group = "CrystalNvimDefinitions" }))
+    assert.is_false(pcall(vim.api.nvim_get_autocmds, { group = "CrystalNvimTreesitter" }))
+  end)
+
+  it("continues when optional dependencies are unavailable", function()
+    local notifications = {}
+    local notify_once = vim.notify_once
+    vim.notify_once = function(message)
+      table.insert(notifications, message)
+    end
+
+    load_plugin(nil, nil).setup({ treesitter = false, definitions = false })
+    vim.notify_once = notify_once
+
+    assert.equals(2, #notifications)
   end)
 
   it("registers the Tree-sitter update hook", function()

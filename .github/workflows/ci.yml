@@ -16,6 +16,10 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        neovim: [v0.12.0, stable]
     env:
       DEPS_DIR: /tmp/nvim-deps
       TREE_SITTER_CRYSTAL_REV: 50ca9e6fcfb16a2cbcad59203cfd8ad650e25c49
@@ -24,7 +28,7 @@ jobs:
 
       - name: Install Neovim
         run: |
-          curl -LO https://github.com/neovim/neovim/releases/download/v0.12.2/nvim-linux-x86_64.tar.gz
+          curl -LO "https://github.com/neovim/neovim/releases/download/${{ matrix.neovim }}/nvim-linux-x86_64.tar.gz"
           tar xzf nvim-linux-x86_64.tar.gz
           echo "$PWD/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
 

@@ -7,6 +7,7 @@ if [[ -n "${DEPS_DIR:-}" ]]; then
   INIT_FILE="$SCRIPT_DIR/ci_init.lua"
 fi
 
+nvim --clean --headless --cmd "set runtimepath^=$PLUGIN_DIR" "+lua require('crystal-nvim').setup({ lint = false, format = false, treesitter = false, definitions = false })" +qa
 nvim --headless -u "$INIT_FILE" -c "PlenaryBustedFile $SCRIPT_DIR/setup_spec.lua" "$@"
 nvim --headless -u "$INIT_FILE" -c "PlenaryBustedFile $SCRIPT_DIR/definitions_spec.lua" "$@"
 nvim --headless -u "$INIT_FILE" -c "PlenaryBustedFile $SCRIPT_DIR/ameba_spec.lua" "$@"
