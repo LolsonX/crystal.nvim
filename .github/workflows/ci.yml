@@ -2,14 +2,23 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [master]
+    tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
     env:
       DEPS_DIR: /tmp/nvim-deps
+      TREE_SITTER_CRYSTAL_REV: 50ca9e6fcfb16a2cbcad59203cfd8ad650e25c49
     steps:
       - uses: actions/checkout@v4
 
@@ -27,7 +36,10 @@ jobs:
 
       - name: Compile Crystal TS parser
         run: |
-          git clone --depth 1 https://github.com/crystal-lang-tools/tree-sitter-crystal.git "$DEPS_DIR/tree-sitter-crystal"
+          git init "$DEPS_DIR/tree-sitter-crystal"
+          git -C "$DEPS_DIR/tree-sitter-crystal" remote add origin https://github.com/crystal-lang-tools/tree-sitter-crystal.git
+          git -C "$DEPS_DIR/tree-sitter-crystal" fetch --depth 1 origin "$TREE_SITTER_CRYSTAL_REV"
+          git -C "$DEPS_DIR/tree-sitter-crystal" checkout --detach FETCH_HEAD
           cd "$DEPS_DIR/tree-sitter-crystal"
           gcc -shared -fPIC -o crystal.so src/parser.c src/scanner.c src/unicode.c -I src -O2
           mkdir -p "$HOME/.local/share/nvim/site/parser"
@@ -37,3 +49,15 @@ jobs:
         run: tests/run.sh
         env:
           DEPS_DIR: /tmp/nvim-deps
+
+  release:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$GITHUB_REF_NAME" || gh release create "$GITHUB_REF_NAME" --generate-notes
