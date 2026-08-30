@@ -12,20 +12,44 @@ Crystal language support for Neovim.
 
 ## Installation
 
-### Option 1: Portable (any plugin manager)
+### Setup
 
-Just add the plugin. The `plugin/crystal.lua` file runs after ALL plugins are loaded, handling all integration:
+Call `setup()` from your plugin manager configuration. crystal.nvim does nothing until you call it.
 
 ```lua
 -- lua/plugins/crystal.lua
-return { "LolsonX/crystal.nvim", dependencies: { "RRethy/nvim-treesitter-endwise" } }
+return {
+  "LolsonX/crystal.nvim",
+  dependencies = {
+    "mfussenegger/nvim-lint",
+    "stevearc/conform.nvim",
+    "nvim-treesitter/nvim-treesitter",
+    "RRethy/nvim-treesitter-endwise",
+  },
+  config = function()
+    require("crystal-nvim").setup()
+  end,
+}
 ```
 
-Works with lazy.nvim, LazyVim, packer.vim, vim-plug, or any plugin manager.
+Disable integrations you do not use:
 
-### Option 2: lazy.nvim with full integration
+```lua
+require("crystal-nvim").setup({
+  lint = false,
+  format = false,
+  treesitter = true,
+})
+```
 
-The portable approach above works everywhere. No extra configuration needed.
+The plugin registers integrations only. Configure nvim-lint to run linting and Conform to format on your preferred events or mappings.
+
+After setup, update nvim-treesitter and install the Crystal parser:
+
+```vim
+:TSUpdate
+:TSInstall crystal
+```
 
 ## Dependencies
 
@@ -40,16 +64,15 @@ The portable approach above works everywhere. No extra configuration needed.
 
 ```
 crystal.nvim/
-├── plugin/
-│   └── crystal.lua           -- Portable integration (loads after all plugins)
-├── runtime/
-│   └── queries/
-│       └── crystal/
-│           └── endwise.scm  -- Endwise queries for Crystal syntax
 ├── lua/
 │   └── crystal-nvim/
+│       ├── init.lua         -- Public setup interface
+│       ├── treesitter.lua  -- Tree-sitter integration
 │       └── linters/
 │           └── ameba.lua   -- Ameba linter definition for nvim-lint
+├── queries/
+│   └── crystal/
+│       └── endwise.scm     -- Endwise queries for Crystal syntax
 └── README.md
 ```
 
@@ -76,4 +99,4 @@ table.insert(conform.formatters_by_ft.crystal, "crystal")
 vim.treesitter.language.register("crystal", { "cr" })
 ```
 
-Queries from `runtime/queries/crystal/endwise.scm` will be automatically discovered by Neovim's query system since they're placed in the standard `runtime/queries/` directory.
+Queries from `queries/crystal/endwise.scm` are automatically discovered through Neovim's runtimepath.

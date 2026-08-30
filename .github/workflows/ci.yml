@@ -34,6 +34,6 @@ jobs:
           cp crystal.so "$HOME/.local/share/nvim/site/parser/"
 
       - name: Run tests
-        run: nvim --headless -u tests/ci_init.lua -c "PlenaryBustedFile tests/endwise_spec.lua"
+        run: tests/run.sh
         env:
           DEPS_DIR: /tmp/nvim-deps
