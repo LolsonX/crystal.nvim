@@ -5,7 +5,7 @@ local function command_for_buffer()
   local dir = bufname ~= "" and vim.fn.fnamemodify(bufname, ":p:h") or vim.fn.getcwd()
   local local_ameba = vim.fs.joinpath(dir, "bin", "ameba")
 
-  if vim.fn.filereadable(local_ameba) == 1 then
+  if vim.fn.executable(local_ameba) == 1 then
     return local_ameba
   end
 

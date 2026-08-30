@@ -31,7 +31,7 @@ local function configure_linting()
     return
   end
 
-  lint.linters.ameba = lint.linters.ameba or require("crystal-nvim.linters.ameba")
+  lint.linters.ameba = require("crystal-nvim.linters.ameba")
   lint.linters_by_ft.crystal = lint.linters_by_ft.crystal or {}
   append_unique(lint.linters_by_ft.crystal, "ameba")
 end

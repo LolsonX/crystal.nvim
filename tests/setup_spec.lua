@@ -52,6 +52,15 @@ describe("crystal-nvim.setup", function()
     assert.is_not_nil(lint.linters.ameba)
   end)
 
+  it("replaces nvim-lint's project-local Ameba definition", function()
+    lint.linters.ameba = { cmd = "bin/ameba" }
+
+    load_plugin(lint, conform).setup({ treesitter = false })
+
+    assert.equals("function", type(lint.linters.ameba.cmd))
+    assert.equals("ameba", lint.linters.ameba.cmd())
+  end)
+
   it("preserves existing Crystal integrations", function()
     lint.linters_by_ft.crystal = { "custom" }
     conform.formatters_by_ft.crystal = { "custom_formatter" }

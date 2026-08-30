@@ -28,12 +28,22 @@ describe("Ameba command selection", function()
     local local_ameba = project_dir .. "/bin/ameba"
     vim.fn.mkdir(project_dir .. "/bin", "p")
     vim.fn.writefile({}, local_ameba)
+    vim.fn.setfperm(local_ameba, "rwxr-xr-x")
 
     local ameba = require("crystal-nvim.linters.ameba")
     assert.equals(local_ameba, ameba.cmd())
   end)
 
   it("falls back to Ameba from PATH", function()
+    local ameba = require("crystal-nvim.linters.ameba")
+    assert.equals("ameba", ameba.cmd())
+  end)
+
+  it("ignores a non-executable project-local Ameba", function()
+    local local_ameba = project_dir .. "/bin/ameba"
+    vim.fn.mkdir(project_dir .. "/bin", "p")
+    vim.fn.writefile({}, local_ameba)
+
     local ameba = require("crystal-nvim.linters.ameba")
     assert.equals("ameba", ameba.cmd())
   end)
