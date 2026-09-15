@@ -670,6 +670,19 @@ local function jump_to(target)
   return true
 end
 
+local function display_path(path)
+  local absolute = vim.fn.fnamemodify(path, ":p")
+  if stdlib_enabled then
+    for _, root in ipairs(standard_library_paths()) do
+      local prefix = root .. "/"
+      if absolute:sub(1, #prefix) == prefix then
+        return "stdlib/" .. absolute:sub(#prefix + 1)
+      end
+    end
+  end
+  return vim.fn.fnamemodify(absolute, ":.")
+end
+
 function M.jump(bufnr)
   local targets = M.candidates(bufnr)
   if #targets == 0 then
@@ -683,7 +696,7 @@ function M.jump(bufnr)
   vim.ui.select(targets, {
     prompt = "Select Crystal definition",
     format_item = function(target)
-      return string.format("%s  %s:%d", target.preview, vim.fn.fnamemodify(target.path, ":."), target.row + 1)
+      return string.format("%s  %s:%d", target.preview, display_path(target.path), target.row + 1)
     end,
   }, function(target)
     if target then

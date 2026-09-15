@@ -151,12 +151,18 @@ describe("Crystal definitions", function()
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "Widget.new" })
     vim.api.nvim_win_set_cursor(0, { 1, 1 })
     local original_select = vim.ui.select
+    local original_systemlist = vim.fn.systemlist
+    local systemlist_calls = 0
     local selected
     vim.ui.select = function(items, options, callback)
       selected = { items = items, options = options }
       callback(vim.tbl_filter(function(item)
         return item.path == root .. "/src/other.cr"
       end, items)[1])
+    end
+    vim.fn.systemlist = function(...)
+      systemlist_calls = systemlist_calls + 1
+      return original_systemlist(...)
     end
 
     assert.is_true(definitions.jump(buffer))
@@ -166,6 +172,8 @@ describe("Crystal definitions", function()
     assert.equals(2, #selected.items)
     assert.matches("class Widget", selected.options.format_item(selected.items[1]))
     assert.equals(root .. "/src/other.cr", vim.api.nvim_buf_get_name(0))
+    assert.equals(0, systemlist_calls)
+    vim.fn.systemlist = original_systemlist
   end)
 
   it("resolves a qualified class name outside its namespace", function()
@@ -433,6 +441,10 @@ describe("Crystal definitions", function()
       "macro helper",
       "end",
     })
+    write(stdlib .. "/string_extension.cr", {
+      "class String",
+      "end",
+    })
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
       "value = String.new",
       "value.upcase",
@@ -478,6 +490,17 @@ describe("Crystal definitions", function()
     local helper = definitions.find(buffer)
     assert.equals("helper", helper.name)
     assert.equals(stdlib .. "/string.cr", helper.path)
+
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "String" })
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    local original_select = vim.ui.select
+    local selected
+    vim.ui.select = function(items, options)
+      selected = { items = items, options = options }
+    end
+    definitions.jump(buffer)
+    vim.ui.select = original_select
+    assert.matches("stdlib/string", selected.options.format_item(selected.items[1]))
     definitions.setup()
   end)
 
