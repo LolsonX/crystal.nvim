@@ -3,7 +3,7 @@ local project_cache = {}
 local stdlib_cache = {}
 local cache_clock = 0
 local max_cached_projects = 8
-local stdlib_enabled = false
+local stdlib_enabled = true
 local stdlib_paths
 
 local declaration_kinds = {
@@ -36,19 +36,17 @@ local function normalize_name(name)
   return name:gsub("^::", ""):gsub("%b()", ""):gsub("%.$", "")
 end
 
+local function disk_source(path)
+  local ok, lines = pcall(vim.fn.readfile, path)
+  return ok and table.concat(lines, "\n") or ""
+end
+
 local function source_for(path, bufnr)
   local absolute = vim.fn.fnamemodify(path, ":p")
   if bufnr and vim.api.nvim_buf_is_valid(bufnr) and vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":p") == absolute then
     return table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
   end
-
-  local loaded = vim.fn.bufnr(absolute, false)
-  if loaded ~= -1 and vim.api.nvim_buf_is_loaded(loaded) and vim.bo[loaded].modified then
-    return table.concat(vim.api.nvim_buf_get_lines(loaded, 0, -1, false), "\n")
-  end
-
-  local ok, lines = pcall(vim.fn.readfile, absolute)
-  return ok and table.concat(lines, "\n") or ""
+  return disk_source(absolute)
 end
 
 local function join_scope(scope, name)
@@ -56,6 +54,29 @@ local function join_scope(scope, name)
     return name
   end
   return scope and scope ~= "" and scope .. "::" .. name or name
+end
+
+local function new_index(with_paths)
+  return { symbols = {}, by_full = {}, by_name = {}, by_path = with_paths and {} or nil }
+end
+
+local function add_to_index(index, symbol, include_full_name)
+  table.insert(index.symbols, symbol)
+  index.by_name[symbol.name] = index.by_name[symbol.name] or {}
+  table.insert(index.by_name[symbol.name], symbol)
+  if include_full_name ~= false then
+    index.by_full[symbol.full_name] = index.by_full[symbol.full_name] or {}
+    table.insert(index.by_full[symbol.full_name], symbol)
+  end
+  if index.by_path then
+    local path = index.by_path[symbol.path] or { scopes = {}, routines = {} }
+    index.by_path[symbol.path] = path
+    if scope_kinds[symbol.kind] then
+      table.insert(path.scopes, symbol)
+    elseif symbol.kind == "method" or symbol.kind == "macro" or symbol.kind == "fun" then
+      table.insert(path.routines, symbol)
+    end
+  end
 end
 
 local function add_symbol(index, node, source, path, kind, owner, routine)
@@ -106,16 +127,12 @@ local function add_symbol(index, node, source, path, kind, owner, routine)
     local value = rhs and vim.treesitter.get_node_text(rhs, source) or ""
     symbol.value_type = value:match("^%s*([A-Z][%w_:]*)%.new%f[%W]")
   end
-  table.insert(index.symbols, symbol)
-  index.by_full[full_name] = index.by_full[full_name] or {}
-  table.insert(index.by_full[full_name], symbol)
-  index.by_name[name] = index.by_name[name] or {}
-  table.insert(index.by_name[name], symbol)
+  add_to_index(index, symbol)
   return symbol
 end
 
-local function add_parameters(index, method, source)
-  local header = vim.split(source, "\n", { plain = true })[method.row + 1] or ""
+local function add_parameters(index, method, lines)
+  local header = lines[method.row + 1] or ""
   local parameters = header:match("%b()")
   if not parameters then
     return
@@ -139,9 +156,7 @@ local function add_parameters(index, method, source)
         routine = method,
         preview = vim.trim(header),
       }
-      table.insert(index.symbols, symbol)
-      index.by_name[name] = index.by_name[name] or {}
-      table.insert(index.by_name[name], symbol)
+      add_to_index(index, symbol, false)
       offset = start and start + #name or offset
     end
   end
@@ -152,6 +167,7 @@ local function parse_source(index, source, path)
   if not ok then
     return
   end
+  local lines = vim.split(source, "\n", { plain = true })
   local tree = parser:parse()[1]
   if not tree then
     return
@@ -161,7 +177,7 @@ local function parse_source(index, source, path)
     local kind = declaration_kinds[node:type()]
     local symbol = kind and add_symbol(index, node, source, path, kind, owner, routine)
     if symbol and kind == "method" then
-      add_parameters(index, symbol, source)
+      add_parameters(index, symbol, lines)
     end
     local child_owner = symbol and scope_kinds[kind] and symbol.full_name or owner
     local child_routine = symbol and (kind == "method" or kind == "macro" or kind == "fun") and symbol or routine
@@ -175,7 +191,7 @@ local function parse_source(index, source, path)
 end
 
 local function parse_file(source, path)
-  local index = { symbols = {}, by_full = {}, by_name = {} }
+  local index = new_index()
   parse_source(index, source, path)
   return index
 end
@@ -212,9 +228,17 @@ local function file_signature(path)
   return string.format("%d:%d:%d:%d:%d", stat.mtime.sec, stat.mtime.nsec, stat.ctime.sec, stat.ctime.nsec, stat.size), stat
 end
 
-local function disk_source(path)
-  local ok, lines = pcall(vim.fn.readfile, path)
-  return ok and table.concat(lines, "\n") or ""
+local function cached_file_index(cache, path)
+  local signature = file_signature(path)
+  if not signature then
+    return nil
+  end
+  local file = cache.files[path]
+  if not file or file.signature ~= signature then
+    file = { signature = signature, index = parse_file(disk_source(path), path) }
+    cache.files[path] = file
+  end
+  return file.index
 end
 
 local function cached_files(root, cache)
@@ -223,13 +247,7 @@ local function cached_files(root, cache)
 
   for _, path in ipairs(paths) do
     local absolute = vim.fn.fnamemodify(path, ":p")
-    local signature = file_signature(absolute)
-    if signature then
-      local file = cache.files[absolute]
-      if not file or file.signature ~= signature then
-        file = { signature = signature, index = parse_file(disk_source(absolute), absolute) }
-        cache.files[absolute] = file
-      end
+    if cached_file_index(cache, absolute) then
       seen[absolute] = true
     end
   end
@@ -284,11 +302,17 @@ end
 
 local function add_symbols(index, file_index)
   for _, symbol in ipairs(file_index.symbols) do
-    table.insert(index.symbols, symbol)
-    index.by_full[symbol.full_name] = index.by_full[symbol.full_name] or {}
-    table.insert(index.by_full[symbol.full_name], symbol)
-    index.by_name[symbol.name] = index.by_name[symbol.name] or {}
-    table.insert(index.by_name[symbol.name], symbol)
+    local duplicate = false
+    local existing_symbols = (symbol.kind == "parameter" and index.by_name[symbol.name] or index.by_full[symbol.full_name]) or {}
+    for _, existing in ipairs(existing_symbols) do
+      if existing.path == symbol.path and existing.row == symbol.row and existing.col == symbol.col and existing.kind == symbol.kind then
+        duplicate = true
+        break
+      end
+    end
+    if not duplicate then
+      add_to_index(index, symbol, symbol.kind ~= "parameter")
+    end
   end
 end
 
@@ -407,30 +431,20 @@ local function stdlib_source_map(root)
   return cache
 end
 
-local function stdlib_file_index(cache, path)
-  local signature = file_signature(path)
-  local file = cache.files[path]
-  if signature and (not file or file.signature ~= signature) then
-    file = { signature = signature, index = parse_file(disk_source(path), path) }
-    cache.files[path] = file
-  end
-  return file and file.index
-end
-
 local function index_stdlib(kind, name)
-  local index = { symbols = {}, by_full = {}, by_name = {} }
+  local index = new_index()
   for _, root in ipairs(standard_library_paths()) do
     local cache = stdlib_source_map(root)
     local paths = (kind == "type" and cache.types or cache.methods)[name] or {}
     for _, path in ipairs(paths) do
-      local file_index = stdlib_file_index(cache, path)
+      local file_index = cached_file_index(cache, path)
       if file_index then
         add_symbols(index, file_index)
       end
     end
     if kind == "type" then
       for _, path in ipairs(cache.constants[name] or {}) do
-        local file_index = stdlib_file_index(cache, path)
+        local file_index = cached_file_index(cache, path)
         if file_index then
           add_symbols(index, file_index)
         end
@@ -463,7 +477,7 @@ local function index_project(root, bufnr)
     end
   end
 
-  local index = { symbols = {}, by_full = {}, by_name = {} }
+  local index = new_index(true)
   for _, path in ipairs(cache.paths) do
     add_symbols(index, overlays[path] or cache.files[path].index)
     overlays[path] = nil
@@ -488,25 +502,24 @@ end
 
 local function scopes_at(index, path, row)
   local scopes = {}
-  for _, symbol in ipairs(index.symbols) do
-    if symbol.path == path and scope_kinds[symbol.kind] and symbol.row <= row and row <= symbol.end_row then
+  local available = index.by_path[path] and index.by_path[path].scopes or {}
+  for position = #available, 1, -1 do
+    local symbol = available[position]
+    if symbol.row <= row and row <= symbol.end_row then
       table.insert(scopes, symbol)
     end
   end
-  table.sort(scopes, function(a, b)
-    return a.row > b.row
-  end)
   return scopes
 end
 
 local function routine_at(index, path, row)
-  local routine
-  for _, symbol in ipairs(index.symbols) do
-    if symbol.path == path and (symbol.kind == "method" or symbol.kind == "macro" or symbol.kind == "fun") and symbol.row <= row and row <= symbol.end_row and (not routine or symbol.row > routine.row) then
-      routine = symbol
+  local routines = index.by_path[path] and index.by_path[path].routines or {}
+  for index = #routines, 1, -1 do
+    local routine = routines[index]
+    if routine.row <= row and row <= routine.end_row then
+      return routine
     end
   end
-  return routine
 end
 
 local function local_variable(index, path, row, name)
@@ -632,6 +645,15 @@ local function stdlib_lookup(index, absolute, row, name, receiver, qualified_nam
   return "method", name
 end
 
+local function local_targets(targets)
+  for _, target in ipairs(targets) do
+    if target.kind ~= "variable" and target.kind ~= "parameter" then
+      return false
+    end
+  end
+  return #targets > 0
+end
+
 function M.candidates(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local path = vim.api.nvim_buf_get_name(bufnr)
@@ -647,7 +669,7 @@ function M.candidates(bufnr)
   local index = index_project(M.root(absolute), bufnr)
   local row = vim.api.nvim_win_get_cursor(0)[1] - 1
   local targets = candidates_from(index, absolute, row, name, receiver, qualified_name)
-  if #targets > 0 or not stdlib_enabled then
+  if not stdlib_enabled or local_targets(targets) then
     return targets
   end
 
@@ -670,7 +692,7 @@ local function jump_to(target)
   return true
 end
 
-local function display_path(path)
+local function display_path(path, project_root)
   local absolute = vim.fn.fnamemodify(path, ":p")
   if stdlib_enabled then
     for _, root in ipairs(standard_library_paths()) do
@@ -680,10 +702,17 @@ local function display_path(path)
       end
     end
   end
+  if project_root then
+    local prefix = project_root .. "/lib/"
+    if absolute:sub(1, #prefix) == prefix then
+      return absolute:sub(#prefix + 1)
+    end
+  end
   return vim.fn.fnamemodify(absolute, ":.")
 end
 
 function M.jump(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
   local targets = M.candidates(bufnr)
   if #targets == 0 then
     vim.notify("crystal.nvim: definition not found", vim.log.levels.INFO)
@@ -696,7 +725,7 @@ function M.jump(bufnr)
   vim.ui.select(targets, {
     prompt = "Select Crystal definition",
     format_item = function(target)
-      return string.format("%s  %s:%d", target.preview, display_path(target.path), target.row + 1)
+      return string.format("%s  %s:%d", target.preview, display_path(target.path, M.root(vim.api.nvim_buf_get_name(bufnr))), target.row + 1)
     end,
   }, function(target)
     if target then
@@ -719,7 +748,7 @@ end
 
 function M.setup(options)
   options = options or {}
-  stdlib_enabled = options.stdlib == true
+  stdlib_enabled = options.stdlib ~= false
   stdlib_paths = options.paths
   stdlib_cache = {}
   local group = vim.api.nvim_create_augroup("CrystalNvimDefinitions", { clear = true })

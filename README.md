@@ -44,19 +44,27 @@ require("crystal-nvim").setup({
 })
 ```
 
-Enable standard-library `gd` fallback when needed:
+Standard-library navigation is enabled by default. Disable it when needed:
 
 ```lua
 require("crystal-nvim").setup({
-  definitions = { stdlib = true },
+  definitions = { stdlib = false },
 })
+```
+
+Run `:checkhealth crystal-nvim` to verify Crystal, the Tree-sitter parser, optional integrations, and `gd` in an open Crystal buffer.
+
+Benchmark cold and cached definitions lookups with:
+
+```bash
+nvim --headless -u tests/minimal_init.lua -l bench/definitions.lua
 ```
 
 ### Definitions
 
-`gd` finds Crystal declarations under the nearest `shard.yml` (falling back to `.git`). It indexes classes, modules, structs, enums, libs, unions, annotations, constants, methods, macros, and `fun` declarations. Local variables and method arguments resolve to their nearest declaration. Instance methods resolve when their receiver was directly created with `Type.new`; ambiguous names and receivers that need further type inference do not jump.
+`gd` finds Crystal declarations under the nearest `shard.yml` (falling back to `.git`), including shards installed in the project's `lib/` directory. It indexes classes, modules, structs, enums, libs, unions, annotations, constants, methods, macros, and `fun` declarations. Local variables and method arguments resolve to their nearest declaration. Instance methods resolve when their receiver was directly created with `Type.new`; ambiguous names and receivers that need further type inference do not jump.
 
-The index reads project source and unsaved open buffers. Project files are cached per root and reparsed only when they change; modified buffers overlay cached disk source. With `definitions.stdlib = true`, unresolved lookups fall back to the installed Crystal standard library from `crystal env CRYSTAL_PATH`. It does not start an LSP client, compile the project, edit source text, or write files.
+The index reads project source and unsaved open buffers. Project files are cached per root and reparsed only when they change; modified buffers overlay cached disk source. `gd` lists matching project definitions first, followed by matching declarations from the installed Crystal standard library. Set `definitions.stdlib = false` to exclude standard-library results. It does not start an LSP client, compile the project, edit source text, or write files.
 
 ### Navigation demo
 

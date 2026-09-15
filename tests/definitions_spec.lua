@@ -186,6 +186,38 @@ describe("Crystal definitions", function()
     assert.equals(root .. "/src/types.cr", target.path)
   end)
 
+  it("indexes shards installed under the project lib directory", function()
+    write(root .. "/lib/example/shard.yml", { "name: example" })
+    write(root .. "/lib/example/src/example.cr", {
+      "module Example",
+      "  class Client",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "Example::Client.new" })
+    vim.api.nvim_win_set_cursor(0, { 1, 10 })
+
+    local target = definitions.find(buffer)
+    assert.equals("Client", target.name)
+    assert.equals(root .. "/lib/example/src/example.cr", target.path)
+
+    write(root .. "/lib/example/src/extension.cr", {
+      "module Example",
+      "  class Client",
+      "  end",
+      "end",
+    })
+    local original_select = vim.ui.select
+    local selected
+    vim.ui.select = function(items, options)
+      selected = { items = items, options = options }
+    end
+    definitions.jump(buffer)
+    vim.ui.select = original_select
+
+    assert.matches("  example/src/[^:]+:%d+$", selected.options.format_item(selected.items[1]))
+  end)
+
   it("resolves Type.new to Type#initialize", function()
     vim.api.nvim_buf_set_name(buffer, root .. "/src/external.cr")
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "App::Widget.new" })
@@ -279,6 +311,24 @@ describe("Crystal definitions", function()
     assert.equals("render", target.name)
     assert.equals("method", target.kind)
     assert.equals(1, target.row)
+  end)
+
+  it("uses the innermost enclosing scope", function()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "module Outer",
+      "  class Inner",
+      "    def render",
+      "    end",
+      "",
+      "    render",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_win_set_cursor(0, { 6, 6 })
+
+    local target = definitions.find(buffer)
+    assert.equals("render", target.name)
+    assert.equals(2, target.row)
   end)
 
   it("resolves method arguments", function()
@@ -450,7 +500,7 @@ describe("Crystal definitions", function()
       "value.upcase",
     })
     definitions.clear_cache()
-    definitions.setup({ stdlib = true, paths = { stdlib } })
+    definitions.setup({ paths = { stdlib } })
 
     vim.api.nvim_win_set_cursor(0, { 1, 16 })
     local initialize = definitions.find(buffer)
@@ -502,6 +552,62 @@ describe("Crystal definitions", function()
     vim.ui.select = original_select
     assert.matches("stdlib/string", selected.options.format_item(selected.items[1]))
     definitions.setup()
+  end)
+
+  it("discovers standard library roots from CRYSTAL_PATH", function()
+    local stdlib = vim.fn.tempname()
+    write(stdlib .. "/prelude.cr", { "class String", "end" })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "String" })
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    local original_executable = vim.fn.executable
+    local original_systemlist = vim.fn.systemlist
+    vim.fn.executable = function()
+      return 1
+    end
+    vim.fn.systemlist = function()
+      return { stdlib }
+    end
+    vim.fn.system("true")
+    definitions.clear_cache()
+    definitions.setup()
+
+    local target = definitions.find(buffer)
+    definitions.setup({ stdlib = false })
+    assert.is_nil(definitions.find(buffer))
+    vim.fn.executable = original_executable
+    vim.fn.systemlist = original_systemlist
+    definitions.setup()
+    vim.fn.delete(stdlib, "rf")
+
+    assert.equals("String", target.name)
+    assert.equals(stdlib .. "/prelude.cr", target.path)
+  end)
+
+  it("lists project definitions before matching standard library definitions", function()
+    local stdlib = root .. "/stdlib"
+    write(root .. "/src/local_string.cr", { "class String", "end" })
+    write(stdlib .. "/prelude.cr", { "class String", "end" })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "String" })
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    local original_executable = vim.fn.executable
+    local original_systemlist = vim.fn.systemlist
+    vim.fn.executable = function()
+      return 1
+    end
+    vim.fn.systemlist = function()
+      return { stdlib }
+    end
+    vim.fn.system("true")
+    definitions.clear_cache()
+    definitions.setup({ stdlib = true })
+
+    local targets = definitions.candidates(buffer)
+    vim.fn.executable = original_executable
+    vim.fn.systemlist = original_systemlist
+    definitions.setup()
+
+    assert.equals(root .. "/src/local_string.cr", targets[1].path)
+    assert.equals(stdlib .. "/prelude.cr", targets[2].path)
   end)
 
   it("jumps without changing source text", function()
