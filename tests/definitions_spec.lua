@@ -188,6 +188,27 @@ describe("Crystal definitions", function()
     assert.equals(root .. "/src/types.cr", target.path)
   end)
 
+  it("resolves a namespace-relative qualified constant", function()
+    write(root .. "/src/formatting.cr", {
+      "module App",
+      "  module Formatting",
+      "    DEFAULT_WIDTH = 80",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "module App",
+      "  Formatting::DEFAULT_WIDTH",
+      "end",
+    })
+    vim.api.nvim_win_set_cursor(0, { 2, 17 })
+
+    local target = definitions.find(buffer)
+
+    assert.equals("DEFAULT_WIDTH", target.name)
+    assert.equals(root .. "/src/formatting.cr", target.path)
+  end)
+
   it("indexes shards installed under the project lib directory", function()
     write(root .. "/lib/example/shard.yml", { "name: example" })
     write(root .. "/lib/example/src/example.cr", {

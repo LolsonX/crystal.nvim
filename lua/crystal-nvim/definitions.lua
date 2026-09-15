@@ -829,7 +829,14 @@ local function candidates_from(index, absolute, row, name, receiver, qualified_n
 
   if name:match("^[A-Z]") then
     if qualified_name then
-      return index.by_full[normalize_name(qualified_name)] or {}
+      local normalized = normalize_name(qualified_name)
+      for _, scope in ipairs(scopes) do
+        local matches = index.by_full[scope.full_name .. "::" .. normalized]
+        if matches then
+          return matches
+        end
+      end
+      return index.by_full[normalized] or {}
     end
     for _, scope in ipairs(scopes) do
       local matches = index.by_full[scope.full_name .. "::" .. name]
