@@ -130,6 +130,17 @@ describe("crystal-nvim.setup", function()
     assert.is_false(pcall(vim.api.nvim_get_autocmds, { group = "CrystalNvimTreesitter" }))
   end)
 
+  it("accepts standard library definitions options", function()
+    load_plugin(lint, conform).setup({
+      lint = false,
+      format = false,
+      treesitter = false,
+      definitions = { stdlib = true },
+    })
+
+    assert.equals(1, #vim.api.nvim_get_autocmds({ group = "CrystalNvimDefinitions" }))
+  end)
+
   it("continues when optional dependencies are unavailable", function()
     local notifications = {}
     local notify_once = vim.notify_once

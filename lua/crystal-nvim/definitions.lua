@@ -1,4 +1,10 @@
 local M = {}
+local project_cache = {}
+local stdlib_cache = {}
+local cache_clock = 0
+local max_cached_projects = 8
+local stdlib_enabled = false
+local stdlib_paths
 
 local declaration_kinds = {
   module_def = "module",
@@ -168,6 +174,12 @@ local function parse_source(index, source, path)
   visit(tree:root(), nil)
 end
 
+local function parse_file(source, path)
+  local index = { symbols = {}, by_full = {}, by_name = {} }
+  parse_source(index, source, path)
+  return index
+end
+
 function M.root(path)
   local current = vim.fn.fnamemodify(path, ":p")
   if not current:match("/$") then
@@ -192,34 +204,282 @@ function M.root(path)
   return git_root or vim.fn.fnamemodify(path, ":p:h")
 end
 
-local function index_project(root, bufnr)
-  local index = { symbols = {}, by_full = {}, by_name = {} }
+local function file_signature(path)
+  local stat = vim.uv.fs_stat(path)
+  if not stat or stat.type ~= "file" then
+    return nil
+  end
+  return string.format("%d:%d:%d:%d:%d", stat.mtime.sec, stat.mtime.nsec, stat.ctime.sec, stat.ctime.nsec, stat.size), stat
+end
+
+local function disk_source(path)
+  local ok, lines = pcall(vim.fn.readfile, path)
+  return ok and table.concat(lines, "\n") or ""
+end
+
+local function cached_files(root, cache)
   local paths = vim.fn.globpath(root, "**/*.cr", false, true)
-  local current_path = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":p")
   local seen = {}
 
   for _, path in ipairs(paths) do
     local absolute = vim.fn.fnamemodify(path, ":p")
-    local stat = vim.uv.fs_stat(absolute)
-    if stat and stat.type == "file" then
-      parse_source(index, source_for(absolute, bufnr), absolute)
-      seen[absolute] = true
-    end
-  end
-  if current_path ~= "" and not seen[current_path] then
-    parse_source(index, source_for(current_path, bufnr), current_path)
-    seen[current_path] = true
-  end
-  for _, loaded in ipairs(vim.api.nvim_list_bufs()) do
-    local path = vim.api.nvim_buf_get_name(loaded)
-    local absolute = path ~= "" and vim.fn.fnamemodify(path, ":p") or ""
-    if vim.api.nvim_buf_is_loaded(loaded) and vim.bo[loaded].modified and absolute:sub(1, #root + 1) == root .. "/" and absolute:match("%.cr$") and not seen[absolute] then
-      parse_source(index, source_for(absolute, bufnr), absolute)
+    local signature = file_signature(absolute)
+    if signature then
+      local file = cache.files[absolute]
+      if not file or file.signature ~= signature then
+        file = { signature = signature, index = parse_file(disk_source(absolute), absolute) }
+        cache.files[absolute] = file
+      end
       seen[absolute] = true
     end
   end
 
+  for path in pairs(cache.files) do
+    if not seen[path] then
+      cache.files[path] = nil
+    end
+  end
+
+  cache.paths = vim.tbl_keys(cache.files)
+  table.sort(cache.paths)
+end
+
+local function cached_project(root)
+  local cache = project_cache[root] or { files = {}, buffers = {} }
+  project_cache[root] = cache
+  cache_clock = cache_clock + 1
+  cache.last_used = cache_clock
+  cached_files(root, cache)
+
+  local count = 0
+  local oldest_root
+  local oldest_used
+  for cached_root, cached in pairs(project_cache) do
+    count = count + 1
+    if not oldest_used or cached.last_used < oldest_used then
+      oldest_root = cached_root
+      oldest_used = cached.last_used
+    end
+  end
+  if count > max_cached_projects then
+    project_cache[oldest_root] = nil
+  end
+
+  return cache
+end
+
+local function cached_buffer(cache, bufnr, path)
+  local changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
+  local buffer = cache.buffers[bufnr]
+  if not buffer or buffer.path ~= path or buffer.changedtick ~= changedtick then
+    buffer = {
+      path = path,
+      changedtick = changedtick,
+      index = parse_file(source_for(path, bufnr), path),
+    }
+    cache.buffers[bufnr] = buffer
+  end
+  return buffer.index
+end
+
+local function add_symbols(index, file_index)
+  for _, symbol in ipairs(file_index.symbols) do
+    table.insert(index.symbols, symbol)
+    index.by_full[symbol.full_name] = index.by_full[symbol.full_name] or {}
+    table.insert(index.by_full[symbol.full_name], symbol)
+    index.by_name[symbol.name] = index.by_name[symbol.name] or {}
+    table.insert(index.by_name[symbol.name], symbol)
+  end
+end
+
+local function standard_library_paths()
+  if stdlib_paths then
+    return stdlib_paths
+  end
+  if vim.fn.executable("crystal") ~= 1 then
+    stdlib_paths = {}
+    return stdlib_paths
+  end
+
+  local output = vim.fn.systemlist({ "crystal", "env", "CRYSTAL_PATH" })
+  if vim.v.shell_error ~= 0 then
+    stdlib_paths = {}
+    return stdlib_paths
+  end
+
+  stdlib_paths = {}
+  for _, path in ipairs(vim.split(output[1] or "", ":", { plain = true })) do
+    if path:sub(1, 1) == "/" and vim.uv.fs_stat(path .. "/prelude.cr") then
+      table.insert(stdlib_paths, path)
+    end
+  end
+  return stdlib_paths
+end
+
+local function add_path(paths, name, path)
+  paths[name] = paths[name] or {}
+  table.insert(paths[name], path)
+end
+
+local function same_paths(first, second)
+  if not first or #first ~= #second then
+    return false
+  end
+  for index, path in ipairs(first) do
+    if path ~= second[index] then
+      return false
+    end
+  end
+  return true
+end
+
+local function paths_signature(paths)
+  local signatures = {}
+  for _, path in ipairs(paths) do
+    table.insert(signatures, file_signature(path) or "")
+  end
+  return table.concat(signatures, ";")
+end
+
+local function stdlib_source_map(root)
+  local cache = stdlib_cache[root] or { files = {} }
+  stdlib_cache[root] = cache
+  local now = vim.uv.now()
+  if cache.paths and now - cache.checked_at < 1000 then
+    return cache
+  end
+  local paths = vim.fn.globpath(root, "**/*.cr", false, true)
+  for index, path in ipairs(paths) do
+    paths[index] = vim.fn.fnamemodify(path, ":p")
+  end
+  table.sort(paths)
+  local signature = paths_signature(paths)
+  cache.checked_at = now
+  if same_paths(cache.paths, paths) and cache.source_signature == signature then
+    return cache
+  end
+  cache.paths = paths
+  cache.source_signature = signature
+  cache.types = {}
+  cache.methods = {}
+  cache.constants = {}
+  for _, path in ipairs(paths) do
+    local ok, lines = pcall(vim.fn.readfile, path)
+    if ok then
+      local scopes = {}
+      for _, line in ipairs(lines) do
+        local indent = #(line:match("^(%s*)") or "")
+        local declaration = line:gsub("^%s*abstract%s+", ""):gsub("^%s*", "")
+        local kind, name = declaration:match("^(%a+)%s+([%w_:]+)")
+        if kind and declaration_kinds[kind .. "_def"] then
+          while #scopes > 0 and scopes[#scopes].indent >= indent do
+            table.remove(scopes)
+          end
+          local full_name = name:find("::", 1, true) and normalize_name(name) or join_scope(scopes[#scopes] and scopes[#scopes].name, name)
+          add_path(cache.types, full_name, path)
+          if full_name ~= name then
+            add_path(cache.types, name, path)
+          end
+          if scope_kinds[declaration_kinds[kind .. "_def"]] then
+            table.insert(scopes, { indent = indent, name = full_name })
+          end
+        end
+        local constant = line:match("^%s*([A-Z][%w_]*)%s*=")
+        if constant then
+          while #scopes > 0 and scopes[#scopes].indent >= indent do
+            table.remove(scopes)
+          end
+          local full_name = join_scope(scopes[#scopes] and scopes[#scopes].name, constant)
+          add_path(cache.constants, full_name, path)
+          if full_name ~= constant then
+            add_path(cache.constants, constant, path)
+          end
+        end
+
+        local header = line:match("^%s*def%s+([^%s(]+)") or line:match("^%s*macro%s+([^%s(]+)") or line:match("^%s*fun%s+([^%s(]+)")
+        local method = header and header:match("([a-z_][%w_!?=]*)$")
+        if method then
+          add_path(cache.methods, method, path)
+        end
+      end
+    end
+  end
+  return cache
+end
+
+local function stdlib_file_index(cache, path)
+  local signature = file_signature(path)
+  local file = cache.files[path]
+  if signature and (not file or file.signature ~= signature) then
+    file = { signature = signature, index = parse_file(disk_source(path), path) }
+    cache.files[path] = file
+  end
+  return file and file.index
+end
+
+local function index_stdlib(kind, name)
+  local index = { symbols = {}, by_full = {}, by_name = {} }
+  for _, root in ipairs(standard_library_paths()) do
+    local cache = stdlib_source_map(root)
+    local paths = (kind == "type" and cache.types or cache.methods)[name] or {}
+    for _, path in ipairs(paths) do
+      local file_index = stdlib_file_index(cache, path)
+      if file_index then
+        add_symbols(index, file_index)
+      end
+    end
+    if kind == "type" then
+      for _, path in ipairs(cache.constants[name] or {}) do
+        local file_index = stdlib_file_index(cache, path)
+        if file_index then
+          add_symbols(index, file_index)
+        end
+      end
+    end
+  end
   return index
+end
+
+local function index_project(root, bufnr)
+  local cache = cached_project(root)
+  local current_path = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":p")
+  local overlays = {}
+
+  for _, loaded in ipairs(vim.api.nvim_list_bufs()) do
+    local path = vim.api.nvim_buf_get_name(loaded)
+    local absolute = path ~= "" and vim.fn.fnamemodify(path, ":p") or ""
+    if vim.api.nvim_buf_is_loaded(loaded) and vim.bo[loaded].modified and absolute:sub(1, #root + 1) == root .. "/" and absolute:match("%.cr$") then
+      overlays[absolute] = cached_buffer(cache, loaded, absolute)
+    end
+  end
+
+  if current_path ~= "" and not cache.files[current_path] then
+    overlays[current_path] = cached_buffer(cache, bufnr, current_path)
+  end
+
+  for bufnr_key, buffer in pairs(cache.buffers) do
+    if not vim.api.nvim_buf_is_valid(bufnr_key) or not vim.api.nvim_buf_is_loaded(bufnr_key) or vim.api.nvim_buf_get_name(bufnr_key) ~= buffer.path then
+      cache.buffers[bufnr_key] = nil
+    end
+  end
+
+  local index = { symbols = {}, by_full = {}, by_name = {} }
+  for _, path in ipairs(cache.paths) do
+    add_symbols(index, overlays[path] or cache.files[path].index)
+    overlays[path] = nil
+  end
+  local overlay_paths = vim.tbl_keys(overlays)
+  table.sort(overlay_paths)
+  for _, path in ipairs(overlay_paths) do
+    add_symbols(index, overlays[path])
+  end
+  return index
+end
+
+function M.clear_cache()
+  project_cache = {}
+  stdlib_cache = {}
+  cache_clock = 0
 end
 
 local function one(items)
@@ -315,20 +575,7 @@ local function token_at_cursor(bufnr)
   end
 end
 
-function M.candidates(bufnr)
-  bufnr = bufnr or vim.api.nvim_get_current_buf()
-  local path = vim.api.nvim_buf_get_name(bufnr)
-  if path == "" then
-    return {}
-  end
-  local name, receiver, qualified_name = token_at_cursor(bufnr)
-  if not name then
-    return {}
-  end
-
-  local absolute = vim.fn.fnamemodify(path, ":p")
-  local index = index_project(M.root(absolute), bufnr)
-  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+local function candidates_from(index, absolute, row, name, receiver, qualified_name)
   local scopes = scopes_at(index, absolute, row)
   local method_name = name == "new" and "initialize" or name
 
@@ -366,6 +613,47 @@ function M.candidates(bufnr)
   end
 
   return index.by_name[name] or {}
+end
+
+local function stdlib_lookup(index, absolute, row, name, receiver, qualified_name)
+  local scopes = scopes_at(index, absolute, row)
+  if name:match("^[A-Z]") then
+    return "type", qualified_name and normalize_name(qualified_name) or inferred_type(index, scopes, name)
+  end
+  if receiver and receiver ~= "self" then
+    if receiver:match("^[A-Z]") then
+      return "type", inferred_type(index, scopes, receiver)
+    end
+    local variable = local_variable(index, absolute, row, receiver)
+    if variable and variable.value_type then
+      return "type", inferred_type(index, scopes, variable.value_type)
+    end
+  end
+  return "method", name
+end
+
+function M.candidates(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  if path == "" then
+    return {}
+  end
+  local name, receiver, qualified_name = token_at_cursor(bufnr)
+  if not name then
+    return {}
+  end
+
+  local absolute = vim.fn.fnamemodify(path, ":p")
+  local index = index_project(M.root(absolute), bufnr)
+  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+  local targets = candidates_from(index, absolute, row, name, receiver, qualified_name)
+  if #targets > 0 or not stdlib_enabled then
+    return targets
+  end
+
+  local kind, lookup_name = stdlib_lookup(index, absolute, row, name, receiver, qualified_name)
+  add_symbols(index, index_stdlib(kind, lookup_name))
+  return candidates_from(index, absolute, row, name, receiver, qualified_name)
 end
 
 function M.find(bufnr)
@@ -416,7 +704,11 @@ local function map_definition(bufnr)
   end, { buffer = bufnr, desc = "Crystal definition" })
 end
 
-function M.setup()
+function M.setup(options)
+  options = options or {}
+  stdlib_enabled = options.stdlib == true
+  stdlib_paths = options.paths
+  stdlib_cache = {}
   local group = vim.api.nvim_create_augroup("CrystalNvimDefinitions", { clear = true })
   vim.api.nvim_create_autocmd("FileType", {
     group = group,

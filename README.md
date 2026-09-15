@@ -44,11 +44,23 @@ require("crystal-nvim").setup({
 })
 ```
 
+Enable standard-library `gd` fallback when needed:
+
+```lua
+require("crystal-nvim").setup({
+  definitions = { stdlib = true },
+})
+```
+
 ### Definitions
 
 `gd` finds Crystal declarations under the nearest `shard.yml` (falling back to `.git`). It indexes classes, modules, structs, enums, libs, unions, annotations, constants, methods, macros, and `fun` declarations. Local variables and method arguments resolve to their nearest declaration. Instance methods resolve when their receiver was directly created with `Type.new`; ambiguous names and receivers that need further type inference do not jump.
 
-The index reads project source and unsaved open buffers. It does not start an LSP client, compile the project, edit source text, or write files.
+The index reads project source and unsaved open buffers. Project files are cached per root and reparsed only when they change; modified buffers overlay cached disk source. With `definitions.stdlib = true`, unresolved lookups fall back to the installed Crystal standard library from `crystal env CRYSTAL_PATH`. It does not start an LSP client, compile the project, edit source text, or write files.
+
+### Navigation demo
+
+[`demo/navigation`](demo/navigation) is a self-contained Crystal project for manually testing current `gd` behavior and documented future navigation cases.
 
 The plugin registers integrations only. Configure nvim-lint to run linting and Conform to format on your preferred events or mappings.
 

@@ -348,6 +348,139 @@ describe("Crystal definitions", function()
     vim.api.nvim_buf_delete(other, { force = true })
   end)
 
+  it("reuses unchanged project and unsaved-buffer indexes", function()
+    definitions.clear_cache()
+    local original_parser = vim.treesitter.get_string_parser
+    local parse_count = 0
+    vim.treesitter.get_string_parser = function(...)
+      parse_count = parse_count + 1
+      return original_parser(...)
+    end
+
+    local ok, err = pcall(function()
+      vim.api.nvim_win_set_cursor(0, { 2, 12 })
+      assert.equals("Widget", definitions.find(buffer).name)
+      local initial_count = parse_count
+      assert.is_true(initial_count > 0)
+
+      assert.equals("Widget", definitions.find(buffer).name)
+      assert.equals(initial_count, parse_count)
+    end)
+    vim.treesitter.get_string_parser = original_parser
+    if not ok then
+      error(err)
+    end
+  end)
+
+  it("refreshes a cached project file when it changes on disk", function()
+    definitions.clear_cache()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "App::Widget" })
+    vim.api.nvim_win_set_cursor(0, { 1, 6 })
+    assert.equals("Widget", definitions.find(buffer).name)
+
+    write(root .. "/src/types.cr", {
+      "module App",
+      "  class Replacement",
+      "  end",
+      "end",
+    })
+
+    assert.is_nil(definitions.find(buffer))
+  end)
+
+  it("indexes Crystal files added after the project cache is created", function()
+    definitions.clear_cache()
+    vim.api.nvim_win_set_cursor(0, { 2, 12 })
+    assert.equals("Widget", definitions.find(buffer).name)
+
+    write(root .. "/src/later.cr", {
+      "module App",
+      "  class Later",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "App::Later" })
+    vim.api.nvim_win_set_cursor(0, { 1, 6 })
+
+    assert.equals("Later", definitions.find(buffer).name)
+  end)
+
+  it("falls back to an enabled standard library index", function()
+    local stdlib = root .. "/stdlib"
+    write(stdlib .. "/string.cr", {
+      "abstract class String",
+      "  def initialize",
+      "  end",
+      "",
+      "  def upcase",
+      "  end",
+      "end",
+      "",
+      "STDOUT = \"stdout\"",
+      "",
+      "module Time",
+      "  class Span",
+      "    ZERO = 0",
+      "  end",
+      "end",
+      "",
+      "module Parent",
+      "  class Child",
+      "  end",
+      "  VALUE = 1",
+      "end",
+      "",
+      "macro helper",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "value = String.new",
+      "value.upcase",
+    })
+    definitions.clear_cache()
+    definitions.setup({ stdlib = true, paths = { stdlib } })
+
+    vim.api.nvim_win_set_cursor(0, { 1, 16 })
+    local initialize = definitions.find(buffer)
+    assert.equals("initialize", initialize.name)
+    assert.equals(stdlib .. "/string.cr", initialize.path)
+
+    vim.api.nvim_win_set_cursor(0, { 2, 9 })
+    local upcase = definitions.find(buffer)
+    assert.equals("upcase", upcase.name)
+    assert.equals(stdlib .. "/string.cr", upcase.path)
+
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "STDOUT" })
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    local stdout = definitions.find(buffer)
+    assert.equals("STDOUT", stdout.name)
+    assert.equals(stdlib .. "/string.cr", stdout.path)
+
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "Time::Span::ZERO" })
+    vim.api.nvim_win_set_cursor(0, { 1, 7 })
+    local span = definitions.find(buffer)
+    assert.equals("Span", span.name)
+    assert.equals(stdlib .. "/string.cr", span.path)
+
+    vim.api.nvim_win_set_cursor(0, { 1, 13 })
+    local zero = definitions.find(buffer)
+    assert.equals("ZERO", zero.name)
+    assert.equals(stdlib .. "/string.cr", zero.path)
+
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "Parent::VALUE" })
+    vim.api.nvim_win_set_cursor(0, { 1, 9 })
+    local value = definitions.find(buffer)
+    assert.equals("VALUE", value.name)
+    assert.equals(stdlib .. "/string.cr", value.path)
+
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "helper" })
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    local helper = definitions.find(buffer)
+    assert.equals("helper", helper.name)
+    assert.equals(stdlib .. "/string.cr", helper.path)
+    definitions.setup()
+  end)
+
   it("jumps without changing source text", function()
     local source = vim.api.nvim_buf_get_lines(buffer, 0, -1, false)
     vim.bo[buffer].modified = false

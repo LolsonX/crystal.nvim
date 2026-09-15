@@ -53,7 +53,16 @@ local function validate_options(options)
     if defaults[name] == nil then
       error("crystal.nvim: unknown option '" .. name .. "'")
     end
-    if type(value) ~= "boolean" then
+    if name == "definitions" and type(value) == "table" then
+      for option, enabled in pairs(value) do
+        if option ~= "stdlib" then
+          error("crystal.nvim: unknown definitions option '" .. option .. "'")
+        end
+        if type(enabled) ~= "boolean" then
+          error("crystal.nvim: definitions." .. option .. " must be a boolean")
+        end
+      end
+    elseif type(value) ~= "boolean" then
       error("crystal.nvim: option '" .. name .. "' must be a boolean")
     end
   end
@@ -74,7 +83,7 @@ function M.setup(options)
     require("crystal-nvim.treesitter").setup()
   end
   if options.definitions then
-    require("crystal-nvim.definitions").setup()
+    require("crystal-nvim.definitions").setup(type(options.definitions) == "table" and options.definitions or nil)
   end
 end
 
