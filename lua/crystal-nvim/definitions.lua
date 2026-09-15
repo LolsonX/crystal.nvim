@@ -1,8 +1,12 @@
 local M = {}
 local project_cache = {}
 local stdlib_cache = {}
+local disk_cache = {}
+local disk_cache_write_pending = false
+local pending_disk_projects = {}
 local cache_clock = 0
 local max_cached_projects = 8
+local disk_cache_version = 1
 local stdlib_enabled = true
 local stdlib_paths
 
@@ -58,6 +62,10 @@ end
 
 local function new_index(with_paths)
   return { symbols = {}, by_full = {}, by_name = {}, by_path = with_paths and {} or nil }
+end
+
+local function routine_id(symbol)
+  return string.format("%s:%d:%d:%s", symbol.path, symbol.row, symbol.col, symbol.kind)
 end
 
 local function add_to_index(index, symbol, include_full_name)
@@ -165,12 +173,12 @@ end
 local function parse_source(index, source, path)
   local ok, parser = pcall(vim.treesitter.get_string_parser, source, "crystal")
   if not ok then
-    return
+    return false
   end
   local lines = vim.split(source, "\n", { plain = true })
   local tree = parser:parse()[1]
   if not tree then
-    return
+    return false
   end
 
   local function visit(node, owner, routine)
@@ -188,12 +196,45 @@ local function parse_source(index, source, path)
   end
 
   visit(tree:root(), nil)
+  return true
 end
 
 local function parse_file(source, path)
   local index = new_index()
-  parse_source(index, source, path)
+  return index, parse_source(index, source, path)
+end
+
+local function restore_index(symbols)
+  local index = new_index()
+  local routines = {}
+  local pending = {}
+  for _, stored in ipairs(symbols) do
+    local symbol = vim.deepcopy(stored)
+    local id = symbol.routine_id
+    symbol.routine_id = nil
+    add_to_index(index, symbol, symbol.kind ~= "parameter")
+    if symbol.kind == "method" or symbol.kind == "macro" or symbol.kind == "fun" then
+      routines[routine_id(symbol)] = symbol
+    end
+    if id then
+      table.insert(pending, { symbol = symbol, routine_id = id })
+    end
+  end
+  for _, item in ipairs(pending) do
+    item.symbol.routine = routines[item.routine_id]
+  end
   return index
+end
+
+local function stored_symbols(index)
+  local symbols = {}
+  for _, symbol in ipairs(index.symbols) do
+    local stored = vim.deepcopy(symbol)
+    stored.routine_id = symbol.routine and routine_id(symbol.routine) or nil
+    stored.routine = nil
+    table.insert(symbols, stored)
+  end
+  return symbols
 end
 
 function M.root(path)
@@ -228,26 +269,140 @@ local function file_signature(path)
   return string.format("%d:%d:%d:%d:%d", stat.mtime.sec, stat.mtime.nsec, stat.ctime.sec, stat.ctime.nsec, stat.size), stat
 end
 
-local function cached_file_index(cache, path)
+local function cache_path(root)
+  local directory = vim.g.crystal_nvim_cache_dir or vim.fs.joinpath(vim.fn.stdpath("cache"), "crystal-nvim", "definitions")
+  return vim.fs.joinpath(directory, vim.fn.sha256(root) .. ".mpack")
+end
+
+local function load_disk_cache(root)
+  if disk_cache[root] ~= nil then
+    return disk_cache[root] or nil
+  end
+  local ok, lines = pcall(vim.fn.readfile, cache_path(root), "b")
+  if not ok then
+    disk_cache[root] = false
+    return nil
+  end
+  local decoded_ok, stored = pcall(function()
+    return vim.mpack.decode(vim.base64.decode(table.concat(lines)))
+  end)
+  if decoded_ok and type(stored) == "table" and stored.version == disk_cache_version and stored.root == root and type(stored.files) == "table" then
+    disk_cache[root] = stored
+    return stored
+  end
+  disk_cache[root] = false
+end
+
+local function save_disk_cache()
+  if disk_cache_write_pending then
+    return
+  end
+  disk_cache_write_pending = true
+  vim.defer_fn(function()
+    disk_cache_write_pending = false
+    for root, pending in pairs(pending_disk_projects) do
+      local cache = pending.cache
+      local files = {}
+      for path, file in pairs(cache.files) do
+        files[path] = { signature = file.signature, symbols = stored_symbols(file.index) }
+      end
+      local stored = { version = disk_cache_version, root = root, files = files }
+      disk_cache[root] = stored
+      pending_disk_projects[root] = nil
+      if vim.uv.fs_stat(root) then
+        local path = pending.path
+        vim.fn.mkdir(vim.fs.dirname(path), "p")
+        local temp = path .. "." .. vim.uv.hrtime() .. ".tmp"
+        local ok, encoded = pcall(vim.mpack.encode, stored)
+        if ok and vim.fn.writefile({ vim.base64.encode(encoded) }, temp) == 0 and vim.uv.fs_rename(temp, path) then
+          -- Atomic rename completed.
+        else
+          vim.uv.fs_unlink(temp)
+        end
+      end
+    end
+  end, 10)
+end
+
+local function hydrate_project(root)
+  local stored = load_disk_cache(root)
+  if not stored then
+    return { files = {}, buffers = {} }
+  end
+  local files = {}
+  for path, file in pairs(stored.files) do
+    if type(path) ~= "string" or type(file) ~= "table" or type(file.signature) ~= "string" or type(file.symbols) ~= "table" then
+      return { files = {}, buffers = {} }
+    end
+    local ok, index = pcall(restore_index, file.symbols)
+    if not ok then
+      return { files = {}, buffers = {} }
+    end
+    files[path] = { signature = file.signature, index = index }
+  end
+  local paths = vim.tbl_keys(files)
+  table.sort(paths)
+  return { files = files, paths = paths, buffers = {} }
+end
+
+local function persist_project(root, cache)
+  pending_disk_projects[root] = { cache = cache, path = cache_path(root) }
+  save_disk_cache()
+end
+
+local function cached_file_index(cache, path, before_parse)
   local signature = file_signature(path)
   if not signature then
     return nil
   end
   local file = cache.files[path]
   if not file or file.signature ~= signature then
-    file = { signature = signature, index = parse_file(disk_source(path), path) }
+    if before_parse then
+      before_parse()
+    end
+    local index, parsed = parse_file(disk_source(path), path)
+    if not parsed then
+      return nil, false
+    end
+    file = { signature = signature, index = index }
     cache.files[path] = file
+    return file.index, true
   end
-  return file.index
+  return file.index, false
+end
+
+local function indexing_progress(total)
+  if total < 25 then
+    return function() end
+  end
+  return function(complete)
+    vim.notify(
+      complete and "Crystal project indexed." or "Indexing Crystal project...",
+      vim.log.levels.INFO,
+      { title = "crystal.nvim" }
+    )
+  end
 end
 
 local function cached_files(root, cache)
   local paths = vim.fn.globpath(root, "**/*.cr", false, true)
   local seen = {}
+  local changed = false
+  local progress
+  local function started()
+    if not progress then
+      progress = indexing_progress(#paths)
+      progress()
+    end
+  end
 
   for _, path in ipairs(paths) do
     local absolute = vim.fn.fnamemodify(path, ":p")
-    if cached_file_index(cache, absolute) then
+    local index, file_changed = cached_file_index(cache, absolute, started)
+    if index then
+      if file_changed then
+        changed = true
+      end
       seen[absolute] = true
     end
   end
@@ -255,19 +410,26 @@ local function cached_files(root, cache)
   for path in pairs(cache.files) do
     if not seen[path] then
       cache.files[path] = nil
+      changed = true
     end
   end
 
   cache.paths = vim.tbl_keys(cache.files)
   table.sort(cache.paths)
+  if progress then
+    progress(true)
+  end
+  return changed
 end
 
 local function cached_project(root)
-  local cache = project_cache[root] or { files = {}, buffers = {} }
+  local cache = project_cache[root] or hydrate_project(root)
   project_cache[root] = cache
   cache_clock = cache_clock + 1
   cache.last_used = cache_clock
-  cached_files(root, cache)
+  if cached_files(root, cache) then
+    persist_project(root, cache)
+  end
 
   local count = 0
   local oldest_root
@@ -300,14 +462,16 @@ local function cached_buffer(cache, bufnr, path)
   return buffer.index
 end
 
-local function add_symbols(index, file_index)
+local function add_symbols(index, file_index, deduplicate)
   for _, symbol in ipairs(file_index.symbols) do
     local duplicate = false
-    local existing_symbols = (symbol.kind == "parameter" and index.by_name[symbol.name] or index.by_full[symbol.full_name]) or {}
-    for _, existing in ipairs(existing_symbols) do
-      if existing.path == symbol.path and existing.row == symbol.row and existing.col == symbol.col and existing.kind == symbol.kind then
-        duplicate = true
-        break
+    if deduplicate then
+      local existing_symbols = (symbol.kind == "parameter" and index.by_name[symbol.name] or index.by_full[symbol.full_name]) or {}
+      for _, existing in ipairs(existing_symbols) do
+        if existing.path == symbol.path and existing.row == symbol.row and existing.col == symbol.col and existing.kind == symbol.kind then
+          duplicate = true
+          break
+        end
       end
     end
     if not duplicate then
@@ -493,6 +657,8 @@ end
 function M.clear_cache()
   project_cache = {}
   stdlib_cache = {}
+  disk_cache = {}
+  pending_disk_projects = {}
   cache_clock = 0
 end
 
@@ -674,7 +840,7 @@ function M.candidates(bufnr)
   end
 
   local kind, lookup_name = stdlib_lookup(index, absolute, row, name, receiver, qualified_name)
-  add_symbols(index, index_stdlib(kind, lookup_name))
+  add_symbols(index, index_stdlib(kind, lookup_name), true)
   return candidates_from(index, absolute, row, name, receiver, qualified_name)
 end
 

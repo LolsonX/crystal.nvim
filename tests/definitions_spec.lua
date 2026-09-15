@@ -21,6 +21,7 @@ describe("Crystal definitions", function()
 
   before_each(function()
     root = vim.fn.tempname()
+    vim.g.crystal_nvim_cache_dir = root .. "/cache"
     write(root .. "/shard.yml", { "name: definitions-spec" })
     write(root .. "/src/types.cr", {
       "module App",
@@ -78,6 +79,7 @@ describe("Crystal definitions", function()
       vim.api.nvim_buf_delete(buffer, { force = true })
     end
     vim.fn.delete(root, "rf")
+    vim.g.crystal_nvim_cache_dir = nil
   end)
 
   it("uses the nearest shard.yml as the project root", function()
@@ -428,6 +430,81 @@ describe("Crystal definitions", function()
     if not ok then
       error(err)
     end
+
+  end)
+
+  it("hydrates unchanged project indexes from disk", function()
+    write(root .. "/src/app.cr", { "App::Widget.new" })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "App::Widget.new" })
+    vim.bo[buffer].modified = false
+    vim.api.nvim_win_set_cursor(0, { 1, 6 })
+    definitions.clear_cache()
+    assert.equals("Widget", definitions.find(buffer).name)
+    vim.wait(100)
+
+    local original_parser = vim.treesitter.get_string_parser
+    local parse_count = 0
+    vim.treesitter.get_string_parser = function(...)
+      parse_count = parse_count + 1
+      return original_parser(...)
+    end
+    local ok, err = pcall(function()
+      definitions.clear_cache()
+      assert.equals("Widget", definitions.find(buffer).name)
+      assert.equals(0, parse_count)
+    end)
+    vim.treesitter.get_string_parser = original_parser
+    if not ok then
+      error(err)
+    end
+
+    write(root .. "/src/types.cr", {
+      "module App",
+      "  class Replacement",
+      "  end",
+      "end",
+    })
+    definitions.clear_cache()
+    assert.is_nil(definitions.find(buffer))
+  end)
+
+  it("reports progress while indexing large changed projects", function()
+    for number = 1, 22 do
+      write(root .. "/src/progress_" .. number .. ".cr", {
+        "module App",
+        "  class Progress" .. number,
+        "  end",
+        "end",
+      })
+    end
+    definitions.clear_cache()
+    local original_notify = vim.notify
+    local messages = {}
+    vim.notify = function(message)
+      table.insert(messages, message)
+      return #messages
+    end
+
+    vim.api.nvim_win_set_cursor(0, { 2, 12 })
+    assert.equals("Widget", definitions.find(buffer).name)
+    vim.notify = original_notify
+
+    assert.equals("Indexing Crystal project...", messages[1])
+    assert.equals("Crystal project indexed.", messages[#messages])
+  end)
+
+  it("does not persist failed Tree-sitter parses", function()
+    definitions.clear_cache()
+    local original_parser = vim.treesitter.get_string_parser
+    vim.treesitter.get_string_parser = function()
+      error("parser unavailable")
+    end
+    vim.api.nvim_win_set_cursor(0, { 2, 12 })
+    assert.is_nil(definitions.find(buffer))
+    vim.treesitter.get_string_parser = original_parser
+
+    definitions.clear_cache()
+    assert.equals("Widget", definitions.find(buffer).name)
   end)
 
   it("refreshes a cached project file when it changes on disk", function()

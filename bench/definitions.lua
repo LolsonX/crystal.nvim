@@ -3,6 +3,7 @@ package.path = table.concat({ plugin_root .. "/lua/?.lua", plugin_root .. "/lua/
 
 local files = tonumber(vim.env.CRYSTAL_NVIM_BENCH_FILES) or 200
 local root = vim.fn.tempname()
+vim.g.crystal_nvim_cache_dir = root .. "/cache"
 local definitions = require("crystal-nvim.definitions")
 
 local function write(path, lines)
@@ -36,6 +37,12 @@ definitions.clear_cache()
 local start = vim.uv.hrtime()
 assert(definitions.find(buffer))
 local cold = elapsed(start)
+vim.wait(100)
+
+definitions.clear_cache()
+start = vim.uv.hrtime()
+assert(definitions.find(buffer))
+local disk = elapsed(start)
 
 start = vim.uv.hrtime()
 for _ = 1, 20 do
@@ -43,7 +50,7 @@ for _ = 1, 20 do
 end
 local warm = elapsed(start) / 20
 
-print(string.format("%d files: cold %.2fms, warm %.2fms", files, cold, warm))
+print(string.format("%d files: cold %.2fms, disk %.2fms, warm %.2fms", files, cold, disk, warm))
 vim.api.nvim_buf_delete(buffer, { force = true })
 vim.fn.delete(root, "rf")
 vim.cmd.qa()
