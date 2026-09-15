@@ -172,10 +172,37 @@ describe("Crystal definitions", function()
 
     assert.equals("Select Crystal definition", selected.options.prompt)
     assert.equals(2, #selected.items)
-    assert.matches("class Widget", selected.options.format_item(selected.items[1]))
+    assert.matches("%[project%] class %a+::Widget", selected.options.format_item(selected.items[1]))
     assert.equals(root .. "/src/other.cr", vim.api.nvim_buf_get_name(0))
     assert.equals(0, systemlist_calls)
     vim.fn.systemlist = original_systemlist
+  end)
+
+  it("limits candidates to transitive project requires", function()
+    write(root .. "/src/required.cr", {
+      "require \"./nested\"",
+    })
+    write(root .. "/src/nested.cr", {
+      "module Shared",
+      "  class Widget",
+      "  end",
+      "end",
+    })
+    write(root .. "/src/unrequired.cr", {
+      "module Shared",
+      "  class Widget",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "require \"./required\"",
+      "Shared::Widget.new",
+    })
+    vim.api.nvim_win_set_cursor(0, { 2, 10 })
+
+    local target = definitions.find(buffer)
+
+    assert.equals(root .. "/src/nested.cr", target.path)
   end)
 
   it("resolves a qualified class name outside its namespace", function()
@@ -508,6 +535,23 @@ describe("Crystal definitions", function()
     assert.is_nil(definitions.find(buffer))
   end)
 
+  it("clears persisted definition caches with a command", function()
+    local cache_file = vim.g.crystal_nvim_cache_dir .. "/" .. string.rep("a", 64) .. ".mpack"
+    write(cache_file, { "cache" })
+    definitions.setup()
+    local original_notify = vim.notify
+    local message
+    vim.notify = function(value)
+      message = value
+    end
+
+    vim.cmd("CrystalDefinitionsClearCache")
+    vim.notify = original_notify
+
+    assert.equals(0, vim.fn.filereadable(cache_file))
+    assert.equals("crystal.nvim: definition caches cleared", message)
+  end)
+
   it("reports progress while indexing large changed projects", function()
     for number = 1, 22 do
       write(root .. "/src/progress_" .. number .. ".cr", {
@@ -531,6 +575,35 @@ describe("Crystal definitions", function()
 
     assert.equals("Indexing Crystal project...", messages[1])
     assert.equals("Crystal project indexed.", messages[#messages])
+  end)
+
+  it("indexes large cold projects after prewarm returns", function()
+    for number = 1, 25 do
+      write(root .. "/src/async_" .. number .. ".cr", {
+        "module App",
+        "  class Async" .. number,
+        "  end",
+        "end",
+      })
+    end
+    definitions.clear_cache()
+    local original_parser = vim.treesitter.get_string_parser
+    local parse_count = 0
+    vim.treesitter.get_string_parser = function(...)
+      parse_count = parse_count + 1
+      return original_parser(...)
+    end
+
+    definitions.prewarm(buffer)
+    assert.equals(0, parse_count)
+    vim.wait(1000, function()
+      return parse_count > 0
+    end, 10)
+    vim.treesitter.get_string_parser = original_parser
+
+    assert.is_true(parse_count > 0)
+    vim.api.nvim_win_set_cursor(0, { 2, 12 })
+    assert.equals("Widget", definitions.find(buffer).name)
   end)
 
   it("does not persist failed Tree-sitter parses", function()
@@ -683,6 +756,26 @@ describe("Crystal definitions", function()
     definitions.setup({ paths = { stdlib } })
 
     local target = definitions.find(buffer)
+
+    vim.wait(1000)
+    definitions.clear_cache()
+    local original_parser = vim.treesitter.get_string_parser
+    local stdlib_parse_count = 0
+    vim.treesitter.get_string_parser = function(source, ...)
+      if source:find("alias SizeT", 1, true) then
+        stdlib_parse_count = stdlib_parse_count + 1
+      end
+      return original_parser(source, ...)
+    end
+    local ok, err = pcall(function()
+      local hydrated = definitions.find(buffer)
+      assert.equals("SizeT", hydrated.name)
+      assert.equals(0, stdlib_parse_count)
+    end)
+    vim.treesitter.get_string_parser = original_parser
+    if not ok then
+      error(err)
+    end
 
     definitions.setup()
     vim.fn.delete(stdlib, "rf")

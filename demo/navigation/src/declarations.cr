@@ -4,6 +4,7 @@ module NavigationDemo
 
   module Formatting
     DEFAULT_WIDTH = 80
+    alias Width = Int32
 
     macro banner(text)
       "== {{text}} =="
@@ -31,6 +32,10 @@ module NavigationDemo
     end
   end
 
+  # Deliberately collides with the standard-library type for picker demo.
+  class String
+  end
+
   struct Token
     getter value : String
 
@@ -45,6 +50,8 @@ module NavigationDemo
   end
 
   lib Native
+    alias SizeT = LibC::SizeT
+
     union Payload
       text : UInt8*
       size : Int32

@@ -5,9 +5,10 @@ local disk_cache = {}
 local disk_cache_write_pending = false
 local pending_disk_projects = {}
 local cache_clock = 0
+local cache_generation = 0
 local max_cached_projects = 8
-local disk_cache_version = 1
-local stdlib_cache_version = 3
+local disk_cache_version = 2
+local stdlib_cache_version = 4
 local stdlib_enabled = true
 local stdlib_paths
 
@@ -312,21 +313,39 @@ local function load_stdlib_cache(root)
   if not decoded_ok or type(stored) ~= "table" or stored.version ~= stdlib_cache_version or type(stored.paths) ~= "table" then
     return nil
   end
-  stored.files = {}
+  local files = {}
+  for path, file in pairs(stored.files or {}) do
+    if type(path) == "string" and type(file) == "table" and type(file.signature) == "string" and type(file.symbols) == "table" then
+      local restored, index = pcall(restore_index, file.symbols)
+      if restored then
+        files[path] = { signature = file.signature, index = index }
+      end
+    end
+  end
+  stored.files = files
   stored.checked_at = vim.uv.now()
   return stored
 end
 
 local function persist_stdlib_cache(root, cache)
   local path = stdlib_cache_path(root)
+  local generation = cache_generation
   vim.defer_fn(function()
+    if generation ~= cache_generation then
+      return
+    end
     vim.fn.mkdir(vim.fs.dirname(path), "p")
+    local files = {}
+    for file_path, file in pairs(cache.files) do
+      files[file_path] = { signature = file.signature, symbols = stored_symbols(file.index) }
+    end
     local ok, encoded = pcall(vim.mpack.encode, {
       version = stdlib_cache_version,
       paths = cache.paths,
       types = cache.types,
       methods = cache.methods,
       constants = cache.constants,
+      files = files,
     })
     if ok then
       local temp = path .. "." .. vim.uv.os_getpid() .. "." .. vim.uv.hrtime()
@@ -346,6 +365,10 @@ local function save_disk_cache()
   vim.defer_fn(function()
     disk_cache_write_pending = false
     for root, pending in pairs(pending_disk_projects) do
+      if pending.generation ~= cache_generation then
+        pending_disk_projects[root] = nil
+        goto continue
+      end
       local cache = pending.cache
       local files = {}
       for path, file in pairs(cache.files) do
@@ -365,6 +388,7 @@ local function save_disk_cache()
           vim.uv.fs_unlink(temp)
         end
       end
+      ::continue::
     end
   end, 10)
 end
@@ -391,7 +415,7 @@ local function hydrate_project(root)
 end
 
 local function persist_project(root, cache)
-  pending_disk_projects[root] = { cache = cache, path = cache_path(root) }
+  pending_disk_projects[root] = { cache = cache, path = cache_path(root), generation = cache_generation }
   save_disk_cache()
 end
 
@@ -429,45 +453,84 @@ local function indexing_progress(total)
   end
 end
 
-local function cached_files(root, cache)
+local function start_indexing(root, cache)
+  if cache.loading then
+    return
+  end
   local paths = vim.fn.globpath(root, "**/*.cr", false, true)
-  local seen = {}
-  local changed = false
-  local progress
-  local function started()
-    if not progress then
-      progress = indexing_progress(#paths)
-      progress()
+  local state = {
+    position = 1,
+    seen = {},
+    changed = false,
+    progress = indexing_progress(#paths),
+    generation = cache_generation,
+  }
+  cache.loading = state
+  state.progress()
+
+  local function finish()
+    if state.generation ~= cache_generation or project_cache[root] ~= cache then
+      return
+    end
+    for path in pairs(cache.files) do
+      if not state.seen[path] then
+        cache.files[path] = nil
+        state.changed = true
+      end
+    end
+    cache.paths = vim.tbl_keys(cache.files)
+    table.sort(cache.paths)
+    cache.loading = nil
+    cache.initialized = true
+    cache.checked_at = vim.uv.now()
+    if state.changed then
+      cache.index = nil
+      persist_project(root, cache)
+    end
+    state.progress(true)
+  end
+
+  local function process()
+    if cache.loading ~= state or state.generation ~= cache_generation or project_cache[root] ~= cache then
+      if cache.loading == state then
+        cache.loading = nil
+      end
+      return
+    end
+    local last = math.min(state.position + 23, #paths)
+    for position = state.position, last do
+      local absolute = vim.fn.fnamemodify(paths[position], ":p")
+      local index, changed = cached_file_index(cache, absolute)
+      if index then
+        state.changed = state.changed or changed
+        state.seen[absolute] = true
+      end
+    end
+    state.position = last + 1
+    if state.position > #paths then
+      finish()
+    else
+      vim.defer_fn(process, 0)
     end
   end
 
+  state.process = process
+  vim.defer_fn(process, 0)
+end
+
+local function cache_has_changes(root, cache)
+  local paths = vim.fn.globpath(root, "**/*.cr", false, true)
+  if #paths ~= #cache.paths then
+    return true
+  end
   for _, path in ipairs(paths) do
     local absolute = vim.fn.fnamemodify(path, ":p")
-    local index, file_changed = cached_file_index(cache, absolute, started)
-    if index then
-      if file_changed then
-        changed = true
-      end
-      seen[absolute] = true
+    local file = cache.files[absolute]
+    if not file or file.signature ~= file_signature(absolute) then
+      return true
     end
   end
-
-  for path in pairs(cache.files) do
-    if not seen[path] then
-      cache.files[path] = nil
-      changed = true
-    end
-  end
-
-  cache.paths = vim.tbl_keys(cache.files)
-  table.sort(cache.paths)
-  if progress then
-    progress(true)
-  end
-  if changed then
-    cache.index = nil
-  end
-  return changed
+  return false
 end
 
 local function cached_project(root)
@@ -475,17 +538,19 @@ local function cached_project(root)
   project_cache[root] = cache
   cache_clock = cache_clock + 1
   cache.last_used = cache_clock
-  if cache.needs_validation then
+  if not cache.validation_scheduled and (cache.needs_validation or not cache.initialized or (not cache.loading and cache_has_changes(root, cache))) then
+    local delay = cache.needs_validation and 250 or 0
     cache.needs_validation = nil
-    cache.validating = true
-    vim.defer_fn(function()
-      if cached_files(root, cache) then
-        persist_project(root, cache)
-      end
-      cache.validating = nil
-    end, 250)
-  elseif not cache.validating and cached_files(root, cache) then
-    persist_project(root, cache)
+    cache.validation_scheduled = true
+    local function begin()
+      cache.validation_scheduled = nil
+      start_indexing(root, cache)
+    end
+    if delay == 0 then
+      begin()
+    else
+      vim.defer_fn(begin, delay)
+    end
   end
 
   local count = 0
@@ -672,27 +737,75 @@ local function index_stdlib(kind, name)
   local index = new_index()
   for _, root in ipairs(standard_library_paths()) do
     local cache = stdlib_source_map(root)
+    local changed = false
     local paths = (kind == "type" and cache.types or cache.methods)[name] or {}
     for _, path in ipairs(paths) do
-      local file_index = cached_file_index(cache, path)
+      local file_index, file_changed = cached_file_index(cache, path)
       if file_index then
+        changed = changed or file_changed
         add_symbols(index, file_index)
       end
     end
     if kind == "type" then
       for _, path in ipairs(cache.constants[name] or {}) do
-        local file_index = cached_file_index(cache, path)
+        local file_index, file_changed = cached_file_index(cache, path)
         if file_index then
+          changed = changed or file_changed
           add_symbols(index, file_index)
         end
       end
+    end
+    if changed then
+      persist_stdlib_cache(root, cache)
     end
   end
   return index
 end
 
+local function required_path(root, path, require_path)
+  local base = require_path:sub(1, 1) == "." and vim.fs.dirname(path) or root .. "/src"
+  local candidate = vim.fn.fnamemodify(vim.fs.joinpath(base, require_path), ":p")
+  if not candidate:match("%.cr$") then
+    candidate = candidate .. ".cr"
+  end
+  if candidate:sub(1, #root + 1) == root .. "/" and vim.uv.fs_stat(candidate) then
+    return candidate
+  end
+end
+
+local function required_paths(root, path, source)
+  local paths = {}
+  local seen = {}
+  local has_require = false
+  local function visit(current_path, current_source)
+    if seen[current_path] then
+      return
+    end
+    seen[current_path] = true
+    paths[#paths + 1] = current_path
+    for require_path in current_source:gmatch("require%s+[%\"']([^%\"']+)") do
+      local resolved = required_path(root, current_path, require_path)
+      if resolved then
+        has_require = true
+        visit(resolved, disk_source(resolved))
+      end
+    end
+  end
+  visit(path, source)
+  return has_require and paths or nil
+end
+
 local function index_project(root, bufnr)
   local cache = cached_project(root)
+  if cache.loading then
+    while cache.loading do
+      cache.loading.process()
+    end
+    cache = cached_project(root)
+    while cache.loading do
+      cache.loading.process()
+    end
+  end
   local current_path = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":p")
   local overlays = {}
 
@@ -708,7 +821,9 @@ local function index_project(root, bufnr)
     overlays[current_path] = cached_buffer(cache, bufnr, current_path)
   end
 
-  if not next(overlays) and cache.index then
+  local paths = required_paths(root, current_path, source_for(current_path, bufnr)) or cache.paths
+
+  if paths == cache.paths and not next(overlays) and cache.index then
     return cache.index
   end
 
@@ -719,16 +834,19 @@ local function index_project(root, bufnr)
   end
 
   local index = new_index(true)
-  for _, path in ipairs(cache.paths) do
-    add_symbols(index, overlays[path] or cache.files[path].index)
-    overlays[path] = nil
+  for _, path in ipairs(paths) do
+    local file = overlays[path] or cache.files[path]
+    if file then
+      add_symbols(index, file.index or file)
+      overlays[path] = nil
+    end
   end
   local overlay_paths = vim.tbl_keys(overlays)
   table.sort(overlay_paths)
   for _, path in ipairs(overlay_paths) do
     add_symbols(index, overlays[path])
   end
-  if #overlay_paths == 0 then
+  if paths == cache.paths and #overlay_paths == 0 then
     cache.index = index
   end
   return index
@@ -739,7 +857,7 @@ function M.prewarm(bufnr)
   if path == "" then
     return
   end
-  index_project(M.root(vim.fn.fnamemodify(path, ":p")), bufnr)
+  cached_project(M.root(vim.fn.fnamemodify(path, ":p")))
 end
 
 function M.clear_cache()
@@ -748,6 +866,18 @@ function M.clear_cache()
   disk_cache = {}
   pending_disk_projects = {}
   cache_clock = 0
+end
+
+function M.clear_disk_cache()
+  cache_generation = cache_generation + 1
+  M.clear_cache()
+  local directory = vim.g.crystal_nvim_cache_dir or vim.fs.joinpath(vim.fn.stdpath("cache"), "crystal-nvim", "definitions")
+  for _, path in ipairs(vim.fn.globpath(directory, "*.mpack", false, true)) do
+    local name = vim.fs.basename(path)
+    if name:match("^[0-9a-fA-F]+%.mpack$") or name:match("^stdlib%-[0-9a-fA-F]+%.mpack$") then
+      vim.fn.delete(path)
+    end
+  end
 end
 
 local function one(items)
@@ -972,6 +1102,21 @@ local function display_path(path, project_root)
   return vim.fn.fnamemodify(absolute, ":.")
 end
 
+local function target_group(path, project_root)
+  local absolute = vim.fn.fnamemodify(path, ":p")
+  if stdlib_enabled then
+    for _, root in ipairs(standard_library_paths()) do
+      if absolute:sub(1, #root + 1) == root .. "/" then
+        return "stdlib", 3
+      end
+    end
+  end
+  if project_root and absolute:sub(1, #project_root + 5) == project_root .. "/lib/" then
+    return "shard", 2
+  end
+  return "project", 1
+end
+
 function M.jump(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local targets = M.candidates(bufnr)
@@ -983,10 +1128,21 @@ function M.jump(bufnr)
     return jump_to(targets[1])
   end
 
+  local project_root = M.root(vim.api.nvim_buf_get_name(bufnr))
+  table.sort(targets, function(first, second)
+    local _, first_rank = target_group(first.path, project_root)
+    local _, second_rank = target_group(second.path, project_root)
+    if first_rank ~= second_rank then
+      return first_rank < second_rank
+    end
+    return first.path < second.path
+  end)
   vim.ui.select(targets, {
     prompt = "Select Crystal definition",
     format_item = function(target)
-      return string.format("%s  %s:%d", target.preview, display_path(target.path, M.root(vim.api.nvim_buf_get_name(bufnr))), target.row + 1)
+      local group = target_group(target.path, project_root)
+      local owner = target.owner and target.owner .. "::" or ""
+      return string.format("[%s] %s %s%s  %s:%d", group, target.kind, owner, target.name, display_path(target.path, project_root), target.row + 1)
     end,
   }, function(target)
     if target then
@@ -1012,6 +1168,10 @@ function M.setup(options)
   stdlib_enabled = options.stdlib ~= false
   stdlib_paths = options.paths
   stdlib_cache = {}
+  vim.api.nvim_create_user_command("CrystalDefinitionsClearCache", function()
+    M.clear_disk_cache()
+    vim.notify("crystal.nvim: definition caches cleared", vim.log.levels.INFO)
+  end, { desc = "Clear Crystal definition caches", force = true })
   local group = vim.api.nvim_create_augroup("CrystalNvimDefinitions", { clear = true })
   vim.api.nvim_create_autocmd("FileType", {
     group = group,
