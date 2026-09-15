@@ -274,6 +274,11 @@ local function cache_path(root)
   return vim.fs.joinpath(directory, vim.fn.sha256(root) .. ".mpack")
 end
 
+local function stdlib_cache_path(root)
+  local directory = vim.g.crystal_nvim_cache_dir or vim.fs.joinpath(vim.fn.stdpath("cache"), "crystal-nvim", "definitions")
+  return vim.fs.joinpath(directory, "stdlib-" .. vim.fn.sha256(root) .. ".mpack")
+end
+
 local function load_disk_cache(root)
   if disk_cache[root] ~= nil then
     return disk_cache[root] or nil
@@ -291,6 +296,42 @@ local function load_disk_cache(root)
     return stored
   end
   disk_cache[root] = false
+end
+
+local function load_stdlib_cache(root)
+  local ok, lines = pcall(vim.fn.readfile, stdlib_cache_path(root), "b")
+  if not ok then
+    return nil
+  end
+  local decoded_ok, stored = pcall(function()
+    return vim.mpack.decode(vim.base64.decode(table.concat(lines)))
+  end)
+  if not decoded_ok or type(stored) ~= "table" or type(stored.paths) ~= "table" then
+    return nil
+  end
+  stored.files = {}
+  stored.checked_at = vim.uv.now()
+  return stored
+end
+
+local function persist_stdlib_cache(root, cache)
+  local path = stdlib_cache_path(root)
+  vim.defer_fn(function()
+    vim.fn.mkdir(vim.fs.dirname(path), "p")
+    local ok, encoded = pcall(vim.mpack.encode, {
+      paths = cache.paths,
+      types = cache.types,
+      methods = cache.methods,
+      constants = cache.constants,
+    })
+    if ok then
+      local temp = path .. "." .. vim.uv.os_getpid() .. "." .. vim.uv.hrtime()
+      if vim.fn.writefile({ vim.base64.encode(encoded) }, temp) == 0 and vim.uv.fs_rename(temp, path) then
+        return
+      end
+      vim.fn.delete(temp)
+    end
+  end, 10)
 end
 
 local function save_disk_cache()
@@ -419,6 +460,9 @@ local function cached_files(root, cache)
   if progress then
     progress(true)
   end
+  if changed then
+    cache.index = nil
+  end
   return changed
 end
 
@@ -455,18 +499,6 @@ local function cached_project(root)
   end
 
   return cache
-end
-
-function M.prewarm(bufnr)
-  local path = vim.api.nvim_buf_get_name(bufnr)
-  if path == "" then
-    return
-  end
-  vim.schedule(function()
-    if vim.api.nvim_buf_is_valid(bufnr) then
-      cached_project(M.root(vim.fn.fnamemodify(path, ":p")))
-    end
-  end)
 end
 
 local function cached_buffer(cache, bufnr, path)
@@ -551,7 +583,7 @@ local function paths_signature(paths)
 end
 
 local function stdlib_source_map(root)
-  local cache = stdlib_cache[root] or { files = {} }
+  local cache = stdlib_cache[root] or load_stdlib_cache(root) or { files = {} }
   stdlib_cache[root] = cache
   local now = vim.uv.now()
   if cache.paths and now - cache.checked_at < 1000 then
@@ -613,6 +645,7 @@ local function stdlib_source_map(root)
       end
     end
   end
+  persist_stdlib_cache(root, cache)
   return cache
 end
 
@@ -656,6 +689,10 @@ local function index_project(root, bufnr)
     overlays[current_path] = cached_buffer(cache, bufnr, current_path)
   end
 
+  if not next(overlays) and cache.index then
+    return cache.index
+  end
+
   for bufnr_key, buffer in pairs(cache.buffers) do
     if not vim.api.nvim_buf_is_valid(bufnr_key) or not vim.api.nvim_buf_is_loaded(bufnr_key) or vim.api.nvim_buf_get_name(bufnr_key) ~= buffer.path then
       cache.buffers[bufnr_key] = nil
@@ -672,7 +709,18 @@ local function index_project(root, bufnr)
   for _, path in ipairs(overlay_paths) do
     add_symbols(index, overlays[path])
   end
+  if #overlay_paths == 0 then
+    cache.index = index
+  end
   return index
+end
+
+function M.prewarm(bufnr)
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  if path == "" then
+    return
+  end
+  index_project(M.root(vim.fn.fnamemodify(path, ":p")), bufnr)
 end
 
 function M.clear_cache()
