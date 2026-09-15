@@ -209,7 +209,7 @@ local function restore_index(symbols)
   local routines = {}
   local pending = {}
   for _, stored in ipairs(symbols) do
-    local symbol = vim.deepcopy(stored)
+    local symbol = stored
     local id = symbol.routine_id
     symbol.routine_id = nil
     add_to_index(index, symbol, symbol.kind ~= "parameter")
@@ -342,7 +342,7 @@ local function hydrate_project(root)
   end
   local paths = vim.tbl_keys(files)
   table.sort(paths)
-  return { files = files, paths = paths, buffers = {} }
+  return { files = files, paths = paths, buffers = {}, needs_validation = true }
 end
 
 local function persist_project(root, cache)
@@ -427,7 +427,16 @@ local function cached_project(root)
   project_cache[root] = cache
   cache_clock = cache_clock + 1
   cache.last_used = cache_clock
-  if cached_files(root, cache) then
+  if cache.needs_validation then
+    cache.needs_validation = nil
+    cache.validating = true
+    vim.defer_fn(function()
+      if cached_files(root, cache) then
+        persist_project(root, cache)
+      end
+      cache.validating = nil
+    end, 250)
+  elseif not cache.validating and cached_files(root, cache) then
     persist_project(root, cache)
   end
 
@@ -446,6 +455,18 @@ local function cached_project(root)
   end
 
   return cache
+end
+
+function M.prewarm(bufnr)
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  if path == "" then
+    return
+  end
+  vim.schedule(function()
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      cached_project(M.root(vim.fn.fnamemodify(path, ":p")))
+    end
+  end)
 end
 
 local function cached_buffer(cache, bufnr, path)
@@ -923,11 +944,13 @@ function M.setup(options)
     pattern = "crystal",
     callback = function(event)
       map_definition(event.buf)
+      M.prewarm(event.buf)
     end,
   })
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].filetype == "crystal" then
       map_definition(bufnr)
+      M.prewarm(bufnr)
     end
   end
 end

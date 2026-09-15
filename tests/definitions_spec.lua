@@ -465,6 +465,8 @@ describe("Crystal definitions", function()
       "end",
     })
     definitions.clear_cache()
+    assert.equals("Widget", definitions.find(buffer).name)
+    vim.wait(300)
     assert.is_nil(definitions.find(buffer))
   end)
 

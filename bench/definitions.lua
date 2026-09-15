@@ -37,7 +37,7 @@ definitions.clear_cache()
 local start = vim.uv.hrtime()
 assert(definitions.find(buffer))
 local cold = elapsed(start)
-vim.wait(100)
+vim.wait(1000)
 
 definitions.clear_cache()
 start = vim.uv.hrtime()
