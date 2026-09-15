@@ -209,6 +209,23 @@ describe("Crystal definitions", function()
     assert.equals(root .. "/src/formatting.cr", target.path)
   end)
 
+  it("resolves aliases", function()
+    write(root .. "/src/lib_c.cr", {
+      "lib LibC",
+      "  alias SizeT = ULong",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "LibC::SizeT" })
+    vim.api.nvim_win_set_cursor(0, { 1, 8 })
+    definitions.setup({ stdlib = false })
+
+    local target = definitions.find(buffer)
+
+    definitions.setup()
+    assert.equals("SizeT", target.name)
+    assert.equals(root .. "/src/lib_c.cr", target.path)
+  end)
+
   it("indexes shards installed under the project lib directory", function()
     write(root .. "/lib/example/shard.yml", { "name: example" })
     write(root .. "/lib/example/src/example.cr", {
@@ -652,6 +669,25 @@ describe("Crystal definitions", function()
     vim.ui.select = original_select
     assert.matches("stdlib/string", selected.options.format_item(selected.items[1]))
     definitions.setup()
+  end)
+
+  it("resolves aliases from the standard library", function()
+    local stdlib = vim.fn.tempname()
+    write(stdlib .. "/prelude.cr", {
+      "lib LibC",
+      "  alias SizeT = ULong",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "LibC::SizeT" })
+    vim.api.nvim_win_set_cursor(0, { 1, 8 })
+    definitions.setup({ paths = { stdlib } })
+
+    local target = definitions.find(buffer)
+
+    definitions.setup()
+    vim.fn.delete(stdlib, "rf")
+    assert.equals("SizeT", target.name)
+    assert.equals(stdlib .. "/prelude.cr", target.path)
   end)
 
   it("discovers standard library roots from CRYSTAL_PATH", function()

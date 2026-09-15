@@ -7,6 +7,7 @@ local pending_disk_projects = {}
 local cache_clock = 0
 local max_cached_projects = 8
 local disk_cache_version = 1
+local stdlib_cache_version = 3
 local stdlib_enabled = true
 local stdlib_paths
 
@@ -22,6 +23,8 @@ local declaration_kinds = {
   macro_def = "macro",
   fun_def = "fun",
   top_level_fun_def = "fun",
+  alias = "alias",
+  alias_def = "alias",
   const_assign = "constant",
   assign = "variable",
 }
@@ -306,7 +309,7 @@ local function load_stdlib_cache(root)
   local decoded_ok, stored = pcall(function()
     return vim.mpack.decode(vim.base64.decode(table.concat(lines)))
   end)
-  if not decoded_ok or type(stored) ~= "table" or type(stored.paths) ~= "table" then
+  if not decoded_ok or type(stored) ~= "table" or stored.version ~= stdlib_cache_version or type(stored.paths) ~= "table" then
     return nil
   end
   stored.files = {}
@@ -319,6 +322,7 @@ local function persist_stdlib_cache(root, cache)
   vim.defer_fn(function()
     vim.fn.mkdir(vim.fs.dirname(path), "p")
     local ok, encoded = pcall(vim.mpack.encode, {
+      version = stdlib_cache_version,
       paths = cache.paths,
       types = cache.types,
       methods = cache.methods,
@@ -582,6 +586,18 @@ local function paths_signature(paths)
   return table.concat(signatures, ";")
 end
 
+local function libc_platform()
+  local uname = vim.uv.os_uname()
+  local system = uname.sysname:lower()
+  if system == "linux" then
+    return uname.machine .. "-linux-gnu"
+  end
+  if system == "darwin" then
+    return uname.machine .. "-darwin"
+  end
+  return uname.machine .. "-" .. system
+end
+
 local function stdlib_source_map(root)
   local cache = stdlib_cache[root] or load_stdlib_cache(root) or { files = {} }
   stdlib_cache[root] = cache
@@ -605,8 +621,10 @@ local function stdlib_source_map(root)
   cache.methods = {}
   cache.constants = {}
   for _, path in ipairs(paths) do
-    local ok, lines = pcall(vim.fn.readfile, path)
-    if ok then
+    local platform = path:match("/lib_c/([^/]+)/")
+    if not platform or platform == libc_platform() then
+      local ok, lines = pcall(vim.fn.readfile, path)
+      if ok then
       local scopes = {}
       for _, line in ipairs(lines) do
         local indent = #(line:match("^(%s*)") or "")
@@ -642,6 +660,7 @@ local function stdlib_source_map(root)
         if method then
           add_path(cache.methods, method, path)
         end
+      end
       end
     end
   end
