@@ -36,6 +36,27 @@ module NavigationDemo
   class String
   end
 
+  module Refreshable
+    def refresh
+      "refreshed"
+    end
+  end
+
+  class DashboardBase
+    def draw
+      "base dashboard"
+    end
+  end
+
+  class Dashboard < DashboardBase
+    include Refreshable
+
+    def show
+      draw    # GI: DashboardBase#draw
+      refresh # GI: Refreshable#refresh
+    end
+  end
+
   struct Token
     getter value : String
 

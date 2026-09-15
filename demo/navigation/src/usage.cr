@@ -21,16 +21,7 @@ module NavigationDemo
   widget.render
   Widget.build("demo")
 
-  # CURRENT: method lookup within its enclosing class/module.
-  class Dashboard
-    def render
-      "dashboard"
-    end
-
-    def show
-      render
-    end
-  end
+  Dashboard.new.show
 
   NavigationDemo.helper(Token.new("demo"))
 end

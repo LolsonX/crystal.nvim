@@ -7,7 +7,7 @@ local pending_disk_projects = {}
 local cache_clock = 0
 local cache_generation = 0
 local max_cached_projects = 8
-local disk_cache_version = 2
+local disk_cache_version = 3
 local stdlib_cache_version = 4
 local stdlib_enabled = true
 local stdlib_paths
@@ -134,6 +134,10 @@ local function add_symbol(index, node, source, path, kind, owner, routine)
     routine = routine,
     preview = vim.trim(preview),
   }
+  local superclass = kind == "class" and node:field("superclass")[1]
+  if superclass then
+    symbol.superclass = normalize_name(vim.treesitter.get_node_text(superclass, source))
+  end
   if kind == "variable" then
     local rhs = node:field("rhs")[1]
     local value = rhs and vim.treesitter.get_node_text(rhs, source) or ""
@@ -188,6 +192,24 @@ local function parse_source(index, source, path)
   local function visit(node, owner, routine)
     local kind = declaration_kinds[node:type()]
     local symbol = kind and add_symbol(index, node, source, path, kind, owner, routine)
+    if node:type() == "include" and owner then
+      local target = node:named_child(0)
+      if target then
+        local name = normalize_name(vim.treesitter.get_node_text(target, source))
+        add_to_index(index, {
+          name = name,
+          full_name = owner .. "::include:" .. name,
+          kind = "include",
+          owner = owner,
+          path = path,
+          row = select(1, node:range()),
+          col = select(2, node:range()),
+          end_row = select(3, node:range()),
+          end_col = select(4, node:range()),
+          preview = "include " .. name,
+        })
+      end
+    end
     if symbol and kind == "method" then
       add_parameters(index, symbol, lines)
     end
@@ -1073,6 +1095,63 @@ function M.find(bufnr)
   return one(M.candidates(bufnr))
 end
 
+local function hierarchy_name(index, name, owner)
+  if index.by_full[name] then
+    return name
+  end
+  local namespace = owner:match("^(.*)::")
+  return namespace and index.by_full[namespace .. "::" .. name] and namespace .. "::" .. name or name
+end
+
+function M.implementations(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  if path == "" then
+    return {}
+  end
+  local name = token_at_cursor(bufnr)
+  if not name or name:match("^[A-Z]") then
+    return {}
+  end
+  local absolute = vim.fn.fnamemodify(path, ":p")
+  local index = index_project(M.root(absolute), bufnr)
+  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+  local scopes = scopes_at(index, absolute, row)
+  local owner
+  for _, scope in ipairs(scopes) do
+    if scope.kind == "class" or scope.kind == "module" then
+      owner = scope.full_name
+      break
+    end
+  end
+  if not owner then
+    return {}
+  end
+
+  local results = {}
+  local seen = {}
+  local function visit(type_name)
+    if seen[type_name] then
+      return
+    end
+    seen[type_name] = true
+    for _, method in ipairs(index.by_full[type_name .. "." .. name] or {}) do
+      table.insert(results, method)
+    end
+    local type_symbol = one(index.by_full[type_name])
+    if type_symbol and type_symbol.superclass then
+      visit(hierarchy_name(index, type_symbol.superclass, type_name))
+    end
+    for _, include in ipairs(index.symbols) do
+      if include.kind == "include" and include.owner == type_name then
+        visit(hierarchy_name(index, include.name, type_name))
+      end
+    end
+  end
+  visit(owner)
+  return results
+end
+
 local function jump_to(target)
   local ok, err = pcall(vim.cmd.edit, vim.fn.fnameescape(target.path))
   if not ok then
@@ -1089,7 +1168,7 @@ local function display_path(path, project_root)
     for _, root in ipairs(standard_library_paths()) do
       local prefix = root .. "/"
       if absolute:sub(1, #prefix) == prefix then
-        return "stdlib/" .. absolute:sub(#prefix + 1)
+        return absolute:sub(#prefix + 1)
       end
     end
   end
@@ -1153,14 +1232,25 @@ function M.jump(bufnr)
 end
 
 local function map_definition(bufnr)
+  local mappings = {}
   for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(bufnr, "n")) do
-    if mapping.lhs == "gd" then
-      return
-    end
+    mappings[mapping.lhs] = true
   end
-  vim.keymap.set("n", "gd", function()
-    M.jump(bufnr)
-  end, { buffer = bufnr, desc = "Crystal definition" })
+  if not mappings.gd then
+    vim.keymap.set("n", "gd", function()
+      M.jump(bufnr)
+    end, { buffer = bufnr, desc = "Crystal definition" })
+  end
+  if not mappings.gi then
+    vim.keymap.set("n", "gi", function()
+      local target = one(M.implementations(bufnr))
+      if target then
+        jump_to(target)
+      else
+        vim.notify("crystal.nvim: implementation not found", vim.log.levels.INFO)
+      end
+    end, { buffer = bufnr, desc = "Crystal implementation" })
+  end
 end
 
 function M.setup(options)

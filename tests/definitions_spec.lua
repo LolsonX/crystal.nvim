@@ -380,6 +380,38 @@ describe("Crystal definitions", function()
     assert.equals(1, target.row)
   end)
 
+  it("finds superclass and included-module implementations", function()
+    write(root .. "/src/hierarchy.cr", {
+      "module App",
+      "  module Renderable",
+      "    def render",
+      "    end",
+      "  end",
+      "  class Parent",
+      "    def draw",
+      "    end",
+      "  end",
+      "  class Child < Parent",
+      "    include Renderable",
+      "    def show",
+      "      draw",
+      "      render",
+      "    end",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_name(buffer, root .. "/src/hierarchy.cr")
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, vim.fn.readfile(root .. "/src/hierarchy.cr"))
+    vim.bo[buffer].modified = false
+
+    vim.api.nvim_win_set_cursor(0, { 13, 7 })
+    assert.equals("draw", definitions.implementations(buffer)[1].name)
+    assert.equals(6, definitions.implementations(buffer)[1].row)
+    vim.api.nvim_win_set_cursor(0, { 14, 9 })
+    assert.equals("render", definitions.implementations(buffer)[1].name)
+    assert.equals(2, definitions.implementations(buffer)[1].row)
+  end)
+
   it("uses the innermost enclosing scope", function()
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
       "module Outer",
@@ -740,7 +772,7 @@ describe("Crystal definitions", function()
     end
     definitions.jump(buffer)
     vim.ui.select = original_select
-    assert.matches("stdlib/string", selected.options.format_item(selected.items[1]))
+    assert.matches("%[stdlib%].*string", selected.options.format_item(selected.items[1]))
     definitions.setup()
   end)
 

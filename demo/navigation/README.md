@@ -6,6 +6,8 @@ Manual fixture for Crystal navigation features. Open this directory in Neovim, c
 
 Place the cursor on `String` in the `PICKER` line and press `gd` to inspect project and standard-library labels.
 
+`src/declarations.cr` includes `Dashboard#show` examples marked `GI`. Press `gi` on `draw` to jump to the superclass implementation and on `refresh` to jump to the included-module implementation.
+
 `src/ambiguous.cr` intentionally has two `Widget` declarations. A bare `Widget` outside a namespace opens the selection UI; a qualified name does not.
 
 `src/locals.cr` covers local variables, method parameters, receiver inference from `Type.new`, and scope boundaries.
