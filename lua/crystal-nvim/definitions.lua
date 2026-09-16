@@ -7,7 +7,7 @@ local pending_disk_projects = {}
 local cache_clock = 0
 local cache_generation = 0
 local max_cached_projects = 8
-local disk_cache_version = 3
+local disk_cache_version = 4
 local stdlib_cache_version = 4
 local stdlib_enabled = true
 local stdlib_paths
@@ -94,7 +94,7 @@ local function add_to_index(index, symbol, include_full_name)
   end
 end
 
-local function add_symbol(index, node, source, path, kind, owner, routine)
+local function add_symbol(index, node, source, path, kind, owner, routine, visibility)
   local field = (kind == "constant" or kind == "variable") and "lhs" or "name"
   local name_node = node:field(field)[1]
   if not name_node then
@@ -137,6 +137,9 @@ local function add_symbol(index, node, source, path, kind, owner, routine)
     routine = routine,
     preview = vim.trim(preview),
   }
+  if kind == "method" then
+    symbol.visibility = visibility or "public"
+  end
   local superclass = kind == "class" and node:field("superclass")[1]
   if superclass then
     symbol.superclass = normalize_name(vim.treesitter.get_node_text(superclass, source))
@@ -192,9 +195,9 @@ local function parse_source(index, source, path)
     return false
   end
 
-  local function visit(node, owner, routine)
+  local function visit(node, owner, routine, visibility)
     local kind = declaration_kinds[node:type()]
-    local symbol = kind and add_symbol(index, node, source, path, kind, owner, routine)
+    local symbol = kind and add_symbol(index, node, source, path, kind, owner, routine, visibility)
     if node:type() == "include" and owner then
       local target = node:named_child(0)
       if target then
@@ -219,8 +222,10 @@ local function parse_source(index, source, path)
     local child_owner = symbol and scope_kinds[kind] and symbol.full_name or owner
     local child_routine = symbol and (kind == "method" or kind == "macro" or kind == "fun") and symbol or routine
 
+    local modifier = node:type() == "visibility_modifier" and node:field("visibility")[1]
+    local child_visibility = modifier and vim.treesitter.get_node_text(modifier, source) or visibility
     for child in node:iter_children() do
-      visit(child, child_owner, child_routine)
+      visit(child, child_owner, child_routine, child_visibility)
     end
   end
 
@@ -787,14 +792,50 @@ local function index_stdlib(kind, name)
   return index
 end
 
-local function required_path(root, path, require_path)
-  local base = require_path:sub(1, 1) == "." and vim.fs.dirname(path) or root .. "/src"
-  local candidate = vim.fn.fnamemodify(vim.fs.joinpath(base, require_path), ":p")
-  if not candidate:match("%.cr$") then
-    candidate = candidate .. ".cr"
+local function declared_dependencies(root)
+  local dependencies = {}
+  local indentation
+  local ok, lines = pcall(vim.fn.readfile, vim.fs.joinpath(root, "shard.yml"))
+  if not ok then
+    return dependencies
   end
-  if candidate:sub(1, #root + 1) == root .. "/" and vim.uv.fs_stat(candidate) then
-    return candidate
+  for _, line in ipairs(lines) do
+    local spaces = #(line:match("^(%s*)") or "")
+    if line:match("^%s*dependencies:%s*$") then
+      indentation = spaces
+    elseif indentation and spaces <= indentation and line:match("%S") then
+      break
+    elseif indentation and spaces == indentation + 2 then
+      local name = line:match("^%s*([%w_-]+):")
+      if name then
+        dependencies[name] = true
+      end
+    end
+  end
+  return dependencies
+end
+
+local function required_path(root, path, require_path)
+  local candidates = {}
+  if require_path:sub(1, 1) == "." then
+    table.insert(candidates, vim.fs.joinpath(vim.fs.dirname(path), require_path))
+  else
+    local shard, nested = require_path:match("^([^/]+)/(.+)$")
+    if shard and declared_dependencies(root)[shard] then
+      table.insert(candidates, vim.fs.joinpath(root, "lib", shard, "src", nested))
+      table.insert(candidates, vim.fs.joinpath(root, "lib", shard, nested))
+    else
+      table.insert(candidates, vim.fs.joinpath(root, "src", require_path))
+    end
+  end
+  for _, candidate in ipairs(candidates) do
+    candidate = vim.fn.fnamemodify(candidate, ":p")
+    if not candidate:match("%.cr$") then
+      candidate = candidate .. ".cr"
+    end
+    if candidate:sub(1, #root + 1) == root .. "/" and vim.uv.fs_stat(candidate) then
+      return candidate
+    end
   end
 end
 
@@ -1224,7 +1265,8 @@ function M.jump(bufnr)
     format_item = function(target)
       local group = target_group(target.path, project_root)
       local owner = target.owner and target.owner .. "::" or ""
-      return string.format("[%s] %s %s%s  %s:%d", group, target.kind, owner, target.name, display_path(target.path, project_root), target.row + 1)
+      local visibility = target.visibility and " [" .. target.visibility:sub(1, 3) .. "]" or ""
+      return string.format("[%s]%s %s %s%s  %s:%d", group, visibility, target.kind, owner, target.name, display_path(target.path, project_root), target.row + 1)
     end,
   }, function(target)
     if target then

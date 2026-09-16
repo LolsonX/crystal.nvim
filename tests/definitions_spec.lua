@@ -220,6 +220,30 @@ describe("Crystal definitions", function()
     assert.equals(root .. "/src/nested.cr", target.path)
   end)
 
+  it("follows requires through declared shard dependencies", function()
+    write(root .. "/shard.yml", {
+      "name: definitions-spec",
+      "dependencies:",
+      "  example:",
+      "    github: example/example",
+    })
+    write(root .. "/lib/example/src/client.cr", {
+      "module Example",
+      "  class Client",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "require \"example/client\"",
+      "Example::Client.new",
+    })
+    vim.api.nvim_win_set_cursor(0, { 2, 11 })
+
+    local target = definitions.find(buffer)
+
+    assert.equals(root .. "/lib/example/src/client.cr", target.path)
+  end)
+
   it("resolves a qualified class name outside its namespace", function()
     vim.api.nvim_buf_set_name(buffer, root .. "/src/external.cr")
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "App::Widget.new" })
@@ -425,6 +449,34 @@ describe("Crystal definitions", function()
     vim.api.nvim_win_set_cursor(0, { 14, 9 })
     assert.equals("render", definitions.implementations(buffer)[1].name)
     assert.equals(2, definitions.implementations(buffer)[1].row)
+  end)
+
+  it("indexes method visibility", function()
+    write(root .. "/src/visibility.cr", {
+      "module App",
+      "  class Visibility",
+      "    def open",
+      "    end",
+      "    private def hidden",
+      "    end",
+      "    protected def guarded",
+      "    end",
+      "    def check",
+      "      open",
+      "      hidden",
+      "      guarded",
+      "    end",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_name(buffer, root .. "/src/visibility.cr")
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, vim.fn.readfile(root .. "/src/visibility.cr"))
+    vim.bo[buffer].modified = false
+
+    for line, visibility in pairs({ [10] = "public", [11] = "private", [12] = "protected" }) do
+      vim.api.nvim_win_set_cursor(0, { line, 8 })
+      assert.equals(visibility, definitions.find(buffer).visibility)
+    end
   end)
 
   it("uses the innermost enclosing scope", function()
