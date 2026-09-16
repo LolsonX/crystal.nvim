@@ -218,6 +218,22 @@ describe("Crystal definitions", function()
     local target = definitions.find(buffer)
 
     assert.equals(root .. "/src/nested.cr", target.path)
+    local original_readfile = vim.fn.readfile
+    local reads = 0
+    vim.fn.readfile = function(path, ...)
+      if path == root .. "/src/required.cr" or path == root .. "/src/nested.cr" then
+        reads = reads + 1
+      end
+      return original_readfile(path, ...)
+    end
+    local ok, err = pcall(function()
+      assert.equals(root .. "/src/nested.cr", definitions.find(buffer).path)
+      assert.equals(0, reads)
+    end)
+    vim.fn.readfile = original_readfile
+    if not ok then
+      error(err)
+    end
   end)
 
   it("follows requires through declared shard dependencies", function()
@@ -242,6 +258,71 @@ describe("Crystal definitions", function()
     local target = definitions.find(buffer)
 
     assert.equals(root .. "/lib/example/src/client.cr", target.path)
+  end)
+
+  it("follows requires declared by a shard dependency", function()
+    write(root .. "/shard.yml", {
+      "name: definitions-spec",
+      "dependencies:",
+      "  example:",
+      "    github: example/example",
+    })
+    write(root .. "/lib/example/shard.yml", {
+      "name: example",
+      "dependencies:",
+      "  nested:",
+      "    github: example/nested",
+    })
+    write(root .. "/lib/example/src/client.cr", { 'require "nested/thing"' })
+    write(root .. "/lib/nested/src/thing.cr", {
+      "module Nested",
+      "  class Thing",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      'require "example/client"',
+      "Nested::Thing.new",
+    })
+    vim.api.nvim_win_set_cursor(0, { 2, 9 })
+
+    local target = definitions.find(buffer)
+
+    assert.equals(root .. "/lib/nested/src/thing.cr", target.path)
+  end)
+
+  it("refreshes cached require paths after an external source change", function()
+    write(root .. "/src/required.cr", { 'require "./original"' })
+    write(root .. "/src/original.cr", {
+      "module App",
+      "  class Original",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      'require "./required"',
+      "App::Original.new",
+    })
+    vim.api.nvim_win_set_cursor(0, { 2, 6 })
+    assert.equals("Original", definitions.find(buffer).name)
+
+    write(root .. "/src/required.cr", { 'require "./replacement"' })
+    write(root .. "/src/replacement.cr", {
+      "module App",
+      "  class Replacement",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      'require "./required"',
+      "App::Replacement.new",
+    })
+    vim.api.nvim_win_set_cursor(0, { 2, 6 })
+
+    local target = definitions.find(buffer)
+
+    assert.equals("Replacement", target.name)
+    assert.equals(root .. "/src/replacement.cr", target.path)
   end)
 
   it("resolves a qualified class name outside its namespace", function()
@@ -371,6 +452,40 @@ describe("Crystal definitions", function()
     assert.equals(root .. "/src/types.cr", method.path)
   end)
 
+  it("indexes generic, nilable, and union typed variables", function()
+    write(root .. "/src/typed.cr", {
+      "module App",
+      "  class Foo",
+      "    def ping",
+      "    end",
+      "  end",
+      "  class Bar",
+      "    def ping",
+      "    end",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "module App",
+      "  def typed",
+      "    items : Array(Widget)",
+      "    lookup : Hash(String, Widget)",
+      "    maybe : Widget?",
+      "    choice : Foo | Bar",
+      "    choice.ping",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_win_set_cursor(0, { 3, 5 })
+    assert.equals("Array", definitions.find(buffer).value_type)
+    vim.api.nvim_win_set_cursor(0, { 4, 5 })
+    assert.equals("Hash", definitions.find(buffer).value_type)
+    vim.api.nvim_win_set_cursor(0, { 5, 5 })
+    assert.equals("Widget", definitions.find(buffer).value_type)
+    vim.api.nvim_win_set_cursor(0, { 7, 12 })
+    assert.equals(2, #definitions.candidates(buffer))
+  end)
+
   it("resolves an unqualified constructor through the current namespace", function()
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
       "module App",
@@ -449,6 +564,32 @@ describe("Crystal definitions", function()
     vim.api.nvim_win_set_cursor(0, { 14, 9 })
     assert.equals("render", definitions.implementations(buffer)[1].name)
     assert.equals(2, definitions.implementations(buffer)[1].row)
+  end)
+
+  it("finds class methods from extended modules", function()
+    write(root .. "/src/extended.cr", {
+      "module App",
+      "  module Factory",
+      "    def build",
+      "    end",
+      "  end",
+      "  class Widget",
+      "    extend Factory",
+      "    def self.create",
+      "      build",
+      "    end",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_name(buffer, root .. "/src/extended.cr")
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, vim.fn.readfile(root .. "/src/extended.cr"))
+    vim.bo[buffer].modified = false
+    vim.api.nvim_win_set_cursor(0, { 9, 8 })
+
+    local target = definitions.implementations(buffer)[1]
+
+    assert.equals("build", target.name)
+    assert.equals(2, target.row)
   end)
 
   it("indexes method visibility", function()

@@ -8,7 +8,7 @@ Place the cursor on `String` in the `PICKER` line and press `gd` to inspect proj
 
 `src/usage.cr` also requires the declared local `demo_support` shard. Press `gd` on `connect` in the marked client example to inspect project/shard grouping and `pri`/`pro` visibility labels.
 
-`src/declarations.cr` includes `Dashboard#show` examples marked `GI`. Press `gD` on `draw` to jump to the superclass implementation and on `refresh` to jump to the included-module implementation.
+`src/declarations.cr` includes `Dashboard#show` and `Dashboard.create` examples marked `GI`. Press `gD` on `draw` to jump to the superclass implementation, on `refresh` to jump to `src/refreshable.cr`, and on `build` to jump to `src/dashboard_factory.cr`.
 
 `src/ambiguous.cr` intentionally has two `Widget` declarations. A bare `Widget` outside a namespace opens the selection UI; a qualified name does not.
 

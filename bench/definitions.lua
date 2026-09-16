@@ -17,23 +17,27 @@ end
 
 write(root .. "/shard.yml", { "name: definitions-benchmark" })
 for number = 1, files do
-  write(root .. "/src/type_" .. number .. ".cr", {
+  local source = {
     "module Benchmark",
     "  class Type" .. number,
     "    def render",
     "    end",
     "  end",
     "end",
-  })
+  }
+  if number < files then
+    table.insert(source, 1, 'require "./type_' .. (number + 1) .. '"')
+  end
+  write(root .. "/src/type_" .. number .. ".cr", source)
 end
-write(root .. "/src/app.cr", { "Benchmark::Type" .. files .. ".new" })
+write(root .. "/src/app.cr", { 'require "./type_1"', "Benchmark::Type" .. files .. ".new" })
 
 local buffer = vim.api.nvim_create_buf(true, false)
 vim.api.nvim_buf_set_name(buffer, root .. "/src/app.cr")
-vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "Benchmark::Type" .. files .. ".new" })
+vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "./type_1"', "Benchmark::Type" .. files .. ".new" })
 vim.bo[buffer].modified = false
 vim.api.nvim_set_current_buf(buffer)
-vim.api.nvim_win_set_cursor(0, { 1, 12 })
+vim.api.nvim_win_set_cursor(0, { 2, 12 })
 
 definitions.clear_cache()
 local start = vim.uv.hrtime()
@@ -69,7 +73,7 @@ for _ = 1, 20 do
 end
 local warm = elapsed(start) / 20
 
-print(string.format("%d files: cold %.2fms, disk %.2fms (%d parses), prewarmed %.2fms (%d parses), warm %.2fms", files, cold, disk, disk_parses, prewarmed, prewarmed_parses, warm))
+print(string.format("%d-file require graph: cold %.2fms, disk %.2fms (%d parses), prewarmed %.2fms (%d parses), warm %.2fms", files, cold, disk, disk_parses, prewarmed, prewarmed_parses, warm))
 vim.api.nvim_buf_delete(buffer, { force = true })
 vim.fn.delete(root, "rf")
 vim.cmd.qa()

@@ -7,7 +7,7 @@ local pending_disk_projects = {}
 local cache_clock = 0
 local cache_generation = 0
 local max_cached_projects = 8
-local disk_cache_version = 4
+local disk_cache_version = 6
 local stdlib_cache_version = 4
 local stdlib_enabled = true
 local stdlib_paths
@@ -29,6 +29,7 @@ local declaration_kinds = {
   top_level_fun_def = "fun",
   alias = "alias",
   alias_def = "alias",
+  type_declaration = "variable",
   const_assign = "constant",
   assign = "variable",
 }
@@ -44,7 +45,7 @@ local scope_kinds = {
 }
 
 local function normalize_name(name)
-  return name:gsub("^::", ""):gsub("%b()", ""):gsub("%.$", "")
+  return vim.trim(name:gsub("^::", ""):gsub("%b()", ""):gsub("%?$", ""):gsub("%.$", ""))
 end
 
 local function disk_source(path)
@@ -96,7 +97,7 @@ end
 
 local function add_symbol(index, node, source, path, kind, owner, routine, visibility)
   local field = (kind == "constant" or kind == "variable") and "lhs" or "name"
-  local name_node = node:field(field)[1]
+  local name_node = node:field(field)[1] or (kind == "variable" and node:field("var")[1])
   if not name_node then
     return nil
   end
@@ -139,6 +140,7 @@ local function add_symbol(index, node, source, path, kind, owner, routine, visib
   }
   if kind == "method" then
     symbol.visibility = visibility or "public"
+    symbol.class_method = node:field("class")[1] ~= nil
   end
   local superclass = kind == "class" and node:field("superclass")[1]
   if superclass then
@@ -148,6 +150,14 @@ local function add_symbol(index, node, source, path, kind, owner, routine, visib
     local rhs = node:field("rhs")[1]
     local value = rhs and vim.treesitter.get_node_text(rhs, source) or ""
     symbol.value_type = value:match("^%s*([A-Z][%w_:]*)%.new%f[%W]")
+    local type = node:field("type")[1]
+    if type then
+      symbol.value_types = {}
+      for value_type in vim.treesitter.get_node_text(type, source):gmatch("[A-Z][%w_:]*") do
+        table.insert(symbol.value_types, normalize_name(value_type))
+      end
+      symbol.value_type = symbol.value_types[1] or symbol.value_type
+    end
   end
   add_to_index(index, symbol)
   return symbol
@@ -198,21 +208,21 @@ local function parse_source(index, source, path)
   local function visit(node, owner, routine, visibility)
     local kind = declaration_kinds[node:type()]
     local symbol = kind and add_symbol(index, node, source, path, kind, owner, routine, visibility)
-    if node:type() == "include" and owner then
+    if (node:type() == "include" or node:type() == "extend") and owner then
       local target = node:named_child(0)
       if target then
         local name = normalize_name(vim.treesitter.get_node_text(target, source))
         add_to_index(index, {
           name = name,
-          full_name = owner .. "::include:" .. name,
-          kind = "include",
+          full_name = owner .. "::" .. node:type() .. ":" .. name,
+          kind = node:type(),
           owner = owner,
           path = path,
           row = select(1, node:range()),
           col = select(2, node:range()),
           end_row = select(3, node:range()),
           end_col = select(4, node:range()),
-          preview = "include " .. name,
+          preview = node:type() .. " " .. name,
         })
       end
     end
@@ -792,11 +802,18 @@ local function index_stdlib(kind, name)
   return index
 end
 
-local function declared_dependencies(root)
+local function declared_dependencies(project_root, cache)
+  cache.dependencies = cache.dependencies or {}
+  local signature = file_signature(vim.fs.joinpath(project_root, "shard.yml"))
+  local cached = cache.dependencies[project_root]
+  if cached and cached.signature == signature then
+    return cached.names
+  end
   local dependencies = {}
   local indentation
-  local ok, lines = pcall(vim.fn.readfile, vim.fs.joinpath(root, "shard.yml"))
+  local ok, lines = pcall(vim.fn.readfile, vim.fs.joinpath(project_root, "shard.yml"))
   if not ok then
+    cache.dependencies[project_root] = { signature = signature, names = dependencies }
     return dependencies
   end
   for _, line in ipairs(lines) do
@@ -812,16 +829,23 @@ local function declared_dependencies(root)
       end
     end
   end
+  cache.dependencies[project_root] = { signature = signature, names = dependencies }
   return dependencies
 end
 
-local function required_path(root, path, require_path)
+local function owning_project(root, path)
+  local shard = path:sub(#root + 2):match("^lib/([^/]+)/")
+  return shard and vim.fs.joinpath(root, "lib", shard) or root
+end
+
+local function required_path(root, cache, path, require_path)
   local candidates = {}
   if require_path:sub(1, 1) == "." then
     table.insert(candidates, vim.fs.joinpath(vim.fs.dirname(path), require_path))
   else
     local shard, nested = require_path:match("^([^/]+)/(.+)$")
-    if shard and declared_dependencies(root)[shard] then
+    local owner = owning_project(root, path)
+    if shard and declared_dependencies(owner, cache)[shard] then
       table.insert(candidates, vim.fs.joinpath(root, "lib", shard, "src", nested))
       table.insert(candidates, vim.fs.joinpath(root, "lib", shard, nested))
     else
@@ -839,22 +863,39 @@ local function required_path(root, path, require_path)
   end
 end
 
-local function required_paths(root, path, source)
+local function required_paths(root, cache, path, source, bufnr)
   local paths = {}
   local seen = {}
   local has_require = false
+  cache.requires = cache.requires or {}
+  local function signature(current_path)
+    if bufnr and current_path == path and vim.api.nvim_buf_is_valid(bufnr) then
+      return "buffer:" .. vim.api.nvim_buf_get_changedtick(bufnr)
+    end
+    return file_signature(current_path)
+  end
   local function visit(current_path, current_source)
     if seen[current_path] then
       return
     end
     seen[current_path] = true
     paths[#paths + 1] = current_path
-    for require_path in current_source:gmatch("require%s+[%\"']([^%\"']+)") do
-      local resolved = required_path(root, current_path, require_path)
-      if resolved then
-        has_require = true
-        visit(resolved, disk_source(resolved))
+    local current_signature = signature(current_path)
+    local entry = cache.requires[current_path]
+    if not entry or entry.signature ~= current_signature then
+      entry = { signature = current_signature, paths = {} }
+      current_source = current_source or disk_source(current_path)
+      for require_path in current_source:gmatch("require%s+[%\"']([^%\"']+)") do
+        local resolved = required_path(root, cache, current_path, require_path)
+        if resolved then
+          table.insert(entry.paths, resolved)
+        end
       end
+      cache.requires[current_path] = entry
+    end
+    for _, resolved in ipairs(entry.paths) do
+      has_require = true
+      visit(resolved)
     end
   end
   visit(path, source)
@@ -887,7 +928,7 @@ local function index_project(root, bufnr)
     overlays[current_path] = cached_buffer(cache, bufnr, current_path)
   end
 
-  local paths = required_paths(root, current_path, source_for(current_path, bufnr)) or cache.paths
+  local paths = required_paths(root, cache, current_path, source_for(current_path, bufnr), bufnr) or cache.paths
 
   if paths == cache.paths and not next(overlays) and cache.index then
     return cache.index
@@ -996,6 +1037,20 @@ local function inferred_type(index, scopes, name)
   return name
 end
 
+local function typed_method_targets(index, scopes, variable, method_name)
+  local targets = {}
+  local seen = {}
+  for _, value_type in ipairs(variable.value_types or { variable.value_type }) do
+    for _, target in ipairs(index.by_full[inferred_type(index, scopes, value_type) .. "." .. method_name] or {}) do
+      if not seen[target] then
+        seen[target] = true
+        table.insert(targets, target)
+      end
+    end
+  end
+  return targets
+end
+
 local function token_at_cursor(bufnr)
   local cursor = vim.api.nvim_win_get_cursor(0)
   local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1] or ""
@@ -1066,7 +1121,7 @@ local function candidates_from(index, absolute, row, name, receiver, qualified_n
       end
       local variable = local_variable(index, absolute, row, receiver)
       if variable and variable.value_type then
-        return index.by_full[inferred_type(index, scopes, variable.value_type) .. "." .. method_name] or {}
+        return typed_method_targets(index, scopes, variable, method_name)
       end
       return {}
     end
@@ -1174,21 +1229,25 @@ function M.implementations(bufnr)
 
   local results = {}
   local seen = {}
-  local function visit(type_name)
+  local routine = routine_at(index, absolute, row)
+  local class_method = routine and routine.class_method
+  local function visit(type_name, extended)
     if seen[type_name] then
       return
     end
     seen[type_name] = true
     for _, method in ipairs(index.by_full[type_name .. "." .. name] or {}) do
-      table.insert(results, method)
+      if not class_method or extended or method.class_method then
+        table.insert(results, method)
+      end
     end
     local type_symbol = one(index.by_full[type_name])
     if type_symbol and type_symbol.superclass then
       visit(hierarchy_name(index, type_symbol.superclass, type_name))
     end
     for _, include in ipairs(index.symbols) do
-      if include.kind == "include" and include.owner == type_name then
-        visit(hierarchy_name(index, include.name, type_name))
+      if include.owner == type_name and ((include.kind == "include" and not class_method) or (include.kind == "extend" and class_method)) then
+        visit(hierarchy_name(index, include.name, type_name), include.kind == "extend")
       end
     end
   end

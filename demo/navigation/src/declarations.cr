@@ -1,3 +1,6 @@
+require "./dashboard_factory"
+require "./refreshable"
+
 module NavigationDemo
   annotation Traced
   end
@@ -36,12 +39,6 @@ module NavigationDemo
   class String
   end
 
-  module Refreshable
-    def refresh
-      "refreshed"
-    end
-  end
-
   class DashboardBase
     def draw
       "base dashboard"
@@ -50,10 +47,15 @@ module NavigationDemo
 
   class Dashboard < DashboardBase
     include Refreshable
+    extend DashboardFactory
 
     def show
       draw    # GI: DashboardBase#draw
       refresh # GI: Refreshable#refresh
+    end
+
+    def self.create
+      build # GI: DashboardFactory#build
     end
   end
 
