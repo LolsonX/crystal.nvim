@@ -6,6 +6,8 @@ Manual fixture for Crystal navigation features. Open this directory in Neovim, c
 
 Place the cursor on `String` in the `PICKER` line and press `gd` to inspect project and standard-library labels.
 
+`src/usage.cr` also requires the declared local `demo_support` shard. Press `gd` on `connect` in the marked client example to inspect project/shard grouping and `pri`/`pro` visibility labels.
+
 `src/declarations.cr` includes `Dashboard#show` examples marked `GI`. Press `gD` on `draw` to jump to the superclass implementation and on `refresh` to jump to the included-module implementation.
 
 `src/ambiguous.cr` intentionally has two `Widget` declarations. A bare `Widget` outside a namespace opens the selection UI; a qualified name does not.
@@ -14,4 +16,4 @@ Place the cursor on `String` in the `PICKER` line and press `gd` to inspect proj
 
 `src/future.cr` is a stable playground for navigation not implemented yet. Markers named `FUTURE` document behavior to add without changing this fixture.
 
-The fixture includes no dependencies and is intentionally not an application. It exists to make `gd` testing repeatable.
+The fixture uses a local declared shard and is intentionally not an application. It exists to make `gd` testing repeatable.

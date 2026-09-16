@@ -1,4 +1,6 @@
 require "./declarations"
+require "./local_client"
+require "demo_support/client"
 
 module NavigationDemo
   # CURRENT: module, class, struct, enum, union, annotation, lib, constants, aliases, macros, and fun declarations.
@@ -22,6 +24,10 @@ module NavigationDemo
   Widget.build("demo")
 
   Dashboard.new.show
+
+  # PICKER: [project] [pri] and [shard] [pro] DemoSupport::Client#connect.
+  client = DemoSupport::Client.new
+  client.connect
 
   NavigationDemo.helper(Token.new("demo"))
 end
