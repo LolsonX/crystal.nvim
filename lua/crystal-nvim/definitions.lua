@@ -1241,8 +1241,9 @@ local function map_definition(bufnr)
       M.jump(bufnr)
     end, { buffer = bufnr, desc = "Crystal definition" })
   end
-  if not mappings.gi then
-    vim.keymap.set("n", "gi", function()
+  local implementation_lhs = (vim.g.maplocalleader or "\\") .. "i"
+  if not mappings[implementation_lhs] then
+    vim.keymap.set("n", "<localleader>i", function()
       local target = one(M.implementations(bufnr))
       if target then
         jump_to(target)
