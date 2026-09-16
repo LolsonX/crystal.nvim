@@ -1,4 +1,5 @@
 local M = {}
+local platform = require("crystal-nvim.platform")
 local project_cache = {}
 local stdlib_cache = {}
 local disk_cache = {}
@@ -8,7 +9,7 @@ local cache_clock = 0
 local cache_generation = 0
 local max_cached_projects = 8
 local disk_cache_version = 6
-local stdlib_cache_version = 4
+local stdlib_cache_version = 5
 local stdlib_enabled = true
 local stdlib_paths
 local definition_mapping = "gd"
@@ -691,16 +692,17 @@ local function paths_signature(paths)
   return table.concat(signatures, ";")
 end
 
+local libc_target
+
 local function libc_platform()
+  if libc_target then
+    return libc_target
+  end
   local uname = vim.uv.os_uname()
-  local system = uname.sysname:lower()
-  if system == "linux" then
-    return uname.machine .. "-linux-gnu"
-  end
-  if system == "darwin" then
-    return uname.machine .. "-darwin"
-  end
-  return uname.machine .. "-" .. system
+  local ldd = vim.fn.exepath("ldd")
+  local output = ldd ~= "" and vim.fn.system({ ldd, "--version" }) or ""
+  libc_target = platform.libc_target(uname, output)
+  return libc_target
 end
 
 local function stdlib_source_map(root)

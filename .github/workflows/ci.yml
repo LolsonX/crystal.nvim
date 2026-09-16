@@ -15,10 +15,11 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-13]
         neovim: [v0.12.0, stable]
     env:
       DEPS_DIR: /tmp/nvim-deps
@@ -28,12 +29,22 @@ jobs:
 
       - name: Install Neovim
         run: |
-          curl -LO "https://github.com/neovim/neovim/releases/download/${{ matrix.neovim }}/nvim-linux-x86_64.tar.gz"
-          tar xzf nvim-linux-x86_64.tar.gz
-          echo "$PWD/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            archive="nvim-linux-x86_64.tar.gz"
+            directory="nvim-linux-x86_64"
+          else
+            archive="nvim-macos-x86_64.tar.gz"
+            directory="nvim-macos-x86_64"
+          fi
+          curl -LO "https://github.com/neovim/neovim/releases/download/${{ matrix.neovim }}/$archive"
+          tar xzf "$archive"
+          echo "$PWD/$directory/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y gcc
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update && sudo apt-get install -y gcc
+          fi
 
       - name: Install plenary.nvim
         run: git clone --depth 1 https://github.com/nvim-lua/plenary.nvim.git "$DEPS_DIR/plenary.nvim"
@@ -45,7 +56,11 @@ jobs:
           git -C "$DEPS_DIR/tree-sitter-crystal" fetch --depth 1 origin "$TREE_SITTER_CRYSTAL_REV"
           git -C "$DEPS_DIR/tree-sitter-crystal" checkout --detach FETCH_HEAD
           cd "$DEPS_DIR/tree-sitter-crystal"
-          gcc -shared -fPIC -o crystal.so src/parser.c src/scanner.c src/unicode.c -I src -O2
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            gcc -shared -fPIC -o crystal.so src/parser.c src/scanner.c src/unicode.c -I src -O2
+          else
+            cc -dynamiclib -o crystal.so src/parser.c src/scanner.c src/unicode.c -I src -O2
+          fi
           mkdir -p "$HOME/.local/share/nvim/site/parser"
           cp crystal.so "$HOME/.local/share/nvim/site/parser/"
 
