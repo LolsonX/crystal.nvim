@@ -842,16 +842,23 @@ end
 
 local function required_path(root, cache, path, require_path)
   local candidates = {}
+  local reason
   if require_path:sub(1, 1) == "." then
     table.insert(candidates, vim.fs.joinpath(vim.fs.dirname(path), require_path))
+    reason = "missing relative source"
   else
     local shard, nested = require_path:match("^([^/]+)/(.+)$")
     local owner = owning_project(root, path)
-    if shard and declared_dependencies(owner, cache)[shard] then
+    if shard and not declared_dependencies(owner, cache)[shard] then
+      return nil, "undeclared shard '" .. shard .. "'"
+    end
+    if shard then
       table.insert(candidates, vim.fs.joinpath(root, "lib", shard, "src", nested))
       table.insert(candidates, vim.fs.joinpath(root, "lib", shard, nested))
+      reason = "missing shard source"
     else
       table.insert(candidates, vim.fs.joinpath(root, "src", require_path))
+      reason = "missing project source"
     end
   end
   for _, candidate in ipairs(candidates) do
@@ -863,6 +870,7 @@ local function required_path(root, cache, path, require_path)
       return candidate
     end
   end
+  return nil, reason
 end
 
 local function required_paths(root, cache, path, source, bufnr)
@@ -902,6 +910,35 @@ local function required_paths(root, cache, path, source, bufnr)
   end
   visit(path, source)
   return has_require and paths or nil
+end
+
+function M.require_diagnostics(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  if path == "" then
+    return {}
+  end
+  local absolute = vim.fn.fnamemodify(path, ":p")
+  local root = M.root(absolute)
+  local cache = cached_project(root)
+  local diagnostics = {}
+  local seen = {}
+  local function visit(current_path, source)
+    if seen[current_path] then
+      return
+    end
+    seen[current_path] = true
+    for require_path in source:gmatch("require%s+[%\"']([^%\"']+)") do
+      local resolved, reason = required_path(root, cache, current_path, require_path)
+      if resolved then
+        visit(resolved, disk_source(resolved))
+      else
+        table.insert(diagnostics, { path = current_path, require_path = require_path, reason = reason })
+      end
+    end
+  end
+  visit(absolute, source_for(absolute, bufnr))
+  return diagnostics
 end
 
 local function index_project(root, bufnr)
@@ -1095,10 +1132,34 @@ local function token_at_cursor(bufnr)
   end
 end
 
-local function accessible_targets(scopes, targets)
+local function parent_type(index, type_name)
+  local symbol = one(index.by_full[type_name])
+  if not symbol or not symbol.superclass then
+    return nil
+  end
+  if index.by_full[symbol.superclass] then
+    return symbol.superclass
+  end
+  local namespace = type_name:match("^(.*)::")
+  local qualified = namespace and namespace .. "::" .. symbol.superclass
+  return qualified and index.by_full[qualified] and qualified or symbol.superclass
+end
+
+local function protected_owner(index, type_name, owner)
+  while type_name do
+    if type_name == owner then
+      return true
+    end
+    type_name = parent_type(index, type_name)
+  end
+  return false
+end
+
+local function accessible_targets(index, scopes, targets)
   local accessible = {}
   for _, target in ipairs(targets) do
     local private = target.visibility == "private"
+    local protected = target.visibility == "protected"
     local owner_scope = false
     for _, scope in ipairs(scopes) do
       if scope.full_name == target.owner then
@@ -1106,7 +1167,16 @@ local function accessible_targets(scopes, targets)
         break
       end
     end
-    if not private or owner_scope then
+    local protected_scope = false
+    if protected then
+      for _, scope in ipairs(scopes) do
+        if protected_owner(index, scope.full_name, target.owner) then
+          protected_scope = true
+          break
+        end
+      end
+    end
+    if (not private or owner_scope) and (not protected or protected_scope) then
       table.insert(accessible, target)
     end
   end
@@ -1137,11 +1207,11 @@ local function candidates_from(index, absolute, row, name, receiver, qualified_n
   else
     if receiver and receiver ~= "self" then
       if receiver:match("^[A-Z]") then
-        return accessible_targets(scopes, index.by_full[inferred_type(index, scopes, receiver) .. "." .. method_name] or {})
+        return accessible_targets(index, scopes, index.by_full[inferred_type(index, scopes, receiver) .. "." .. method_name] or {})
       end
       local variable = local_variable(index, absolute, row, receiver)
       if variable and variable.value_type then
-        return accessible_targets(scopes, typed_method_targets(index, scopes, variable, method_name))
+        return accessible_targets(index, scopes, typed_method_targets(index, scopes, variable, method_name))
       end
       return {}
     end
@@ -1152,12 +1222,12 @@ local function candidates_from(index, absolute, row, name, receiver, qualified_n
     for _, scope in ipairs(scopes) do
       local matches = index.by_full[scope.full_name .. "." .. name]
       if matches then
-        return accessible_targets(scopes, matches)
+        return accessible_targets(index, scopes, matches)
       end
     end
   end
 
-  return accessible_targets(scopes, index.by_name[name] or {})
+  return accessible_targets(index, scopes, index.by_name[name] or {})
 end
 
 local function stdlib_lookup(index, absolute, row, name, receiver, qualified_name)
@@ -1409,6 +1479,18 @@ function M.setup(options)
     M.clear_disk_cache()
     vim.notify("crystal.nvim: definition caches cleared", vim.log.levels.INFO)
   end, { desc = "Clear Crystal definition caches", force = true })
+  vim.api.nvim_create_user_command("CrystalDefinitionsRequires", function()
+    local diagnostics = M.require_diagnostics()
+    if #diagnostics == 0 then
+      vim.notify("crystal.nvim: all project requires resolve", vim.log.levels.INFO)
+      return
+    end
+    local lines = {}
+    for _, diagnostic in ipairs(diagnostics) do
+      table.insert(lines, string.format("%s: require %q (%s)", vim.fn.fnamemodify(diagnostic.path, ":."), diagnostic.require_path, diagnostic.reason))
+    end
+    vim.notify("crystal.nvim: unresolved requires\n" .. table.concat(lines, "\n"), vim.log.levels.WARN)
+  end, { desc = "Show unresolved Crystal requires", force = true })
   local group = vim.api.nvim_create_augroup("CrystalNvimDefinitions", { clear = true })
   vim.api.nvim_create_autocmd("FileType", {
     group = group,

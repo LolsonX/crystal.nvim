@@ -291,6 +291,42 @@ describe("Crystal definitions", function()
     assert.equals(root .. "/lib/nested/src/thing.cr", target.path)
   end)
 
+  it("reports unresolved project and shard requires", function()
+    write(root .. "/shard.yml", {
+      "name: definitions-spec",
+      "dependencies:",
+      "  example:",
+      "    github: example/example",
+    })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      'require "./missing"',
+      'require "unknown/client"',
+      'require "example/client"',
+    })
+
+    local diagnostics = definitions.require_diagnostics(buffer)
+
+    assert.equals("missing relative source", diagnostics[1].reason)
+    assert.equals("undeclared shard 'unknown'", diagnostics[2].reason)
+    assert.equals("missing shard source", diagnostics[3].reason)
+  end)
+
+  it("reports unresolved requires with a command", function()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "./missing"' })
+    definitions.setup()
+    local original_notify = vim.notify
+    local message
+    vim.notify = function(value)
+      message = value
+    end
+
+    vim.cmd("CrystalDefinitionsRequires")
+    vim.notify = original_notify
+
+    assert.matches("unresolved requires", message)
+    assert.matches("missing relative source", message)
+  end)
+
   it("refreshes cached require paths after an external source change", function()
     write(root .. "/src/required.cr", { 'require "./original"' })
     write(root .. "/src/original.cr", {
@@ -644,6 +680,45 @@ describe("Crystal definitions", function()
       "end",
     })
     definitions.setup({ stdlib = false })
+    vim.api.nvim_win_set_cursor(0, { 5, 14 })
+    assert.is_nil(definitions.find(buffer))
+    definitions.setup()
+  end)
+
+  it("hides protected methods outside owner and subclasses", function()
+    write(root .. "/src/parent.cr", {
+      "module App",
+      "  class Parent",
+      "    protected def guarded",
+      "    end",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_name(buffer, root .. "/src/child.cr")
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "module App",
+      "  class Child < Parent",
+      "    def check",
+      "      parent = Parent.new",
+      "      parent.guarded",
+      "    end",
+      "  end",
+      "end",
+    })
+    definitions.setup({ stdlib = false })
+    vim.api.nvim_win_set_cursor(0, { 5, 14 })
+    assert.equals("guarded", definitions.find(buffer).name)
+
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "module App",
+      "  class Other",
+      "    def check",
+      "      parent = Parent.new",
+      "      parent.guarded",
+      "    end",
+      "  end",
+      "end",
+    })
     vim.api.nvim_win_set_cursor(0, { 5, 14 })
     assert.is_nil(definitions.find(buffer))
     definitions.setup()
