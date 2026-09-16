@@ -1093,6 +1093,24 @@ local function token_at_cursor(bufnr)
   end
 end
 
+local function accessible_targets(scopes, targets)
+  local accessible = {}
+  for _, target in ipairs(targets) do
+    local private = target.visibility == "private"
+    local owner_scope = false
+    for _, scope in ipairs(scopes) do
+      if scope.full_name == target.owner then
+        owner_scope = true
+        break
+      end
+    end
+    if not private or owner_scope then
+      table.insert(accessible, target)
+    end
+  end
+  return accessible
+end
+
 local function candidates_from(index, absolute, row, name, receiver, qualified_name)
   local scopes = scopes_at(index, absolute, row)
   local method_name = name == "new" and "initialize" or name
@@ -1117,11 +1135,11 @@ local function candidates_from(index, absolute, row, name, receiver, qualified_n
   else
     if receiver and receiver ~= "self" then
       if receiver:match("^[A-Z]") then
-        return index.by_full[inferred_type(index, scopes, receiver) .. "." .. method_name] or {}
+        return accessible_targets(scopes, index.by_full[inferred_type(index, scopes, receiver) .. "." .. method_name] or {})
       end
       local variable = local_variable(index, absolute, row, receiver)
       if variable and variable.value_type then
-        return typed_method_targets(index, scopes, variable, method_name)
+        return accessible_targets(scopes, typed_method_targets(index, scopes, variable, method_name))
       end
       return {}
     end
@@ -1132,12 +1150,12 @@ local function candidates_from(index, absolute, row, name, receiver, qualified_n
     for _, scope in ipairs(scopes) do
       local matches = index.by_full[scope.full_name .. "." .. name]
       if matches then
-        return matches
+        return accessible_targets(scopes, matches)
       end
     end
   end
 
-  return index.by_name[name] or {}
+  return accessible_targets(scopes, index.by_name[name] or {})
 end
 
 local function stdlib_lookup(index, absolute, row, name, receiver, qualified_name)

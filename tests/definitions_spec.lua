@@ -620,6 +620,35 @@ describe("Crystal definitions", function()
     end
   end)
 
+  it("hides private methods outside their owning type", function()
+    write(root .. "/src/access.cr", {
+      "module App",
+      "  class Secret",
+      "    private def hidden",
+      "    end",
+      "    def check",
+      "      hidden",
+      "    end",
+      "  end",
+      "end",
+    })
+    vim.api.nvim_buf_set_name(buffer, root .. "/src/access.cr")
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      "module App",
+      "  class Caller",
+      "    def check",
+      "      secret = Secret.new",
+      "      secret.hidden",
+      "    end",
+      "  end",
+      "end",
+    })
+    definitions.setup({ stdlib = false })
+    vim.api.nvim_win_set_cursor(0, { 5, 14 })
+    assert.is_nil(definitions.find(buffer))
+    definitions.setup()
+  end)
+
   it("uses the innermost enclosing scope", function()
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
       "module Outer",
