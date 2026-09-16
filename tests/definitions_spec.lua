@@ -100,7 +100,21 @@ describe("Crystal definitions", function()
     vim.api.nvim_exec_autocmds("FileType", { buffer = buffer })
 
     assert.equals("Crystal definition", vim.fn.maparg("gd", "n", false, true).desc)
-    assert.equals("Crystal implementation", vim.fn.maparg("\\i", "n", false, true).desc)
+    assert.equals("Crystal implementation", vim.fn.maparg("gD", "n", false, true).desc)
+  end)
+
+  it("configures definition mappings", function()
+    definitions.setup({ mappings = { definition = "gq", implementation = false } })
+    local configured = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(configured, root .. "/src/configured.cr")
+    vim.bo[configured].filetype = "crystal"
+
+    assert.equals("Crystal definition", vim.fn.maparg("gq", "n", false, true).desc)
+    assert.equals("", vim.api.nvim_buf_call(configured, function()
+      return vim.fn.maparg("gD", "n")
+    end))
+    vim.api.nvim_buf_delete(configured, { force = true })
+    definitions.setup()
   end)
 
   it("preserves an existing buffer-local gd mapping", function()

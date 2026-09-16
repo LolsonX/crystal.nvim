@@ -55,10 +55,22 @@ local function validate_options(options)
     end
     if name == "definitions" and type(value) == "table" then
       for option, enabled in pairs(value) do
-        if option ~= "stdlib" then
+        if option ~= "stdlib" and option ~= "mappings" then
           error("crystal.nvim: unknown definitions option '" .. option .. "'")
         end
-        if type(enabled) ~= "boolean" then
+        if option == "mappings" then
+          if type(enabled) ~= "table" then
+            error("crystal.nvim: definitions.mappings must be a table")
+          end
+          for mapping, lhs in pairs(enabled) do
+            if mapping ~= "definition" and mapping ~= "implementation" then
+              error("crystal.nvim: unknown definitions mapping '" .. mapping .. "'")
+            end
+            if type(lhs) ~= "string" and lhs ~= false then
+              error("crystal.nvim: definitions.mappings." .. mapping .. " must be a string or false")
+            end
+          end
+        elseif type(enabled) ~= "boolean" then
           error("crystal.nvim: definitions." .. option .. " must be a boolean")
         end
       end

@@ -11,6 +11,9 @@ local disk_cache_version = 3
 local stdlib_cache_version = 4
 local stdlib_enabled = true
 local stdlib_paths
+local definition_mapping = "gd"
+local implementation_mapping = "gD"
+local managed_mappings = {}
 
 local declaration_kinds = {
   module_def = "module",
@@ -1232,25 +1235,36 @@ function M.jump(bufnr)
 end
 
 local function map_definition(bufnr)
+  for lhs, rhs in pairs(managed_mappings[bufnr] or {}) do
+    if vim.fn.maparg(lhs, "n", false, true).rhs == rhs then
+      pcall(vim.keymap.del, "n", lhs, { buffer = bufnr })
+    end
+  end
+  managed_mappings[bufnr] = {}
   local mappings = {}
   for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(bufnr, "n")) do
     mappings[mapping.lhs] = true
   end
-  if not mappings.gd then
-    vim.keymap.set("n", "gd", function()
-      M.jump(bufnr)
-    end, { buffer = bufnr, desc = "Crystal definition" })
+  local function set_mapping(lhs, callback, desc)
+    if lhs and not mappings[lhs] then
+      vim.keymap.set("n", lhs, callback, { buffer = bufnr, desc = desc })
+      managed_mappings[bufnr][lhs] = vim.fn.maparg(lhs, "n", false, true).rhs
+    end
   end
-  local implementation_lhs = (vim.g.maplocalleader or "\\") .. "i"
-  if not mappings[implementation_lhs] then
-    vim.keymap.set("n", "<localleader>i", function()
+  if definition_mapping then
+    set_mapping(definition_mapping, function()
+      M.jump(bufnr)
+    end, "Crystal definition")
+  end
+  if implementation_mapping then
+    set_mapping(implementation_mapping, function()
       local target = one(M.implementations(bufnr))
       if target then
         jump_to(target)
       else
         vim.notify("crystal.nvim: implementation not found", vim.log.levels.INFO)
       end
-    end, { buffer = bufnr, desc = "Crystal implementation" })
+    end, "Crystal implementation")
   end
 end
 
@@ -1258,6 +1272,17 @@ function M.setup(options)
   options = options or {}
   stdlib_enabled = options.stdlib ~= false
   stdlib_paths = options.paths
+  local mappings = options.mappings or {}
+  if mappings.definition == false then
+    definition_mapping = nil
+  else
+    definition_mapping = mappings.definition or "gd"
+  end
+  if mappings.implementation == false then
+    implementation_mapping = nil
+  else
+    implementation_mapping = mappings.implementation or "gD"
+  end
   stdlib_cache = {}
   vim.api.nvim_create_user_command("CrystalDefinitionsClearCache", function()
     M.clear_disk_cache()
