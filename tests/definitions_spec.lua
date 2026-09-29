@@ -291,6 +291,121 @@ describe("Crystal definitions", function()
     assert.equals(root .. "/lib/nested/src/thing.cr", target.path)
   end)
 
+  it("resolves path and git-locked shard dependencies", function()
+    write(root .. "/shard.yml", {
+      "name: definitions-spec",
+      "dependencies:",
+      "  local:",
+      "    path: vendor/local",
+      "  canonical:",
+      "    github: example/canonical",
+    })
+    write(root .. "/shard.lock", {
+      "version: 2.0",
+      "shards:",
+      "  local:",
+      "    path: vendor/local",
+      "  canonical:",
+      "    git: https://github.com/example/canonical.git",
+      "    version: 1.2.3",
+    })
+    write(root .. "/vendor/local/src/client.cr", { "class LocalClient", "end" })
+    write(root .. "/lib/checkout-name/shard.yml", { "name: canonical" })
+    write(root .. "/lib/checkout-name/src/client.cr", { "class CanonicalClient", "end" })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      'require "local/client"',
+      'require "canonical/client"',
+      "CanonicalClient.new",
+    })
+    vim.api.nvim_win_set_cursor(0, { 3, 3 })
+
+    local target = definitions.find(buffer)
+
+    assert.equals(root .. "/lib/checkout-name/src/client.cr", target.path)
+  end)
+
+  it("uses the top-level lockfile for transitive shard dependencies", function()
+    write(root .. "/shard.yml", {
+      "name: definitions-spec",
+      "dependencies:",
+      "  parent:",
+      "    github: example/parent",
+    })
+    write(root .. "/shard.lock", {
+      "shards:",
+      "  parent:",
+      "    git: https://github.com/example/parent.git",
+      "  child:",
+      "    path: vendor/child",
+    })
+    write(root .. "/lib/parent/shard.yml", {
+      "name: parent",
+      "dependencies:",
+      "  child:",
+      "    path: ../vendor/child",
+    })
+    write(root .. "/lib/parent/shard.lock", {
+      "shards:",
+      "  child:",
+      "    git: https://github.com/example/other-child.git",
+    })
+    write(root .. "/lib/parent/src/entry.cr", { 'require "child/client"' })
+    write(root .. "/vendor/child/src/client.cr", { "class ChildClient", "end" })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      'require "parent/entry"',
+      "ChildClient.new",
+    })
+    vim.api.nvim_win_set_cursor(0, { 2, 3 })
+
+    assert.equals(root .. "/vendor/child/src/client.cr", definitions.find(buffer).path)
+  end)
+
+  it("resolves external path dependencies and refreshes changed lockfiles", function()
+    local shared = root .. "-shared"
+    write(root .. "/shard.yml", {
+      "name: definitions-spec",
+      "dependencies:",
+      "  local:",
+      "    path: ../shared",
+    })
+    write(root .. "/shard.lock", { "shards:", "  local:", "    path: ../" .. vim.fs.basename(shared) })
+    write(shared .. "/shard.yml", { "name: local" })
+    write(shared .. "/src/client.cr", { "class LocalClient", "end" })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "local/client"', "LocalClient.new" })
+    vim.api.nvim_win_set_cursor(0, { 2, 3 })
+    assert.equals(shared .. "/src/client.cr", definitions.find(buffer).path)
+
+    write(shared .. "/src/client.cr", { "class UpdatedClient", "end" })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "local/client"', "UpdatedClient.new" })
+    assert.equals("UpdatedClient", definitions.find(buffer).name)
+
+    local external = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(external, shared .. "/src/client.cr")
+    vim.api.nvim_buf_set_lines(external, 0, -1, false, { "class UnsavedClient", "end" })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "local/client"', "UnsavedClient.new" })
+    assert.equals("UnsavedClient", definitions.find(buffer).name)
+
+    write(shared .. "/src/nested.cr", { "class UnsavedNested", "end" })
+    vim.api.nvim_buf_set_lines(external, 0, -1, false, { 'require "./nested"' })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "local/client"', "UnsavedNested.new" })
+    assert.equals("UnsavedNested", definitions.find(buffer).name)
+
+    vim.api.nvim_buf_set_lines(external, 0, -1, false, { 'require "./missing"' })
+    local diagnostics = definitions.require_diagnostics(buffer)
+    assert.equals(shared .. "/src/client.cr", diagnostics[1].path)
+    assert.equals("./missing", diagnostics[1].require_path)
+    vim.api.nvim_buf_delete(external, { force = true })
+
+    vim.fn.delete(shared .. "/src/client.cr")
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "local/client"', "LocalClient.new" })
+    assert.is_nil(definitions.find(buffer))
+
+    write(root .. "/vendor/local/src/client.cr", { "class LocalClient", "end" })
+    write(root .. "/shard.lock", { "shards:", "  local:", "    path: " .. root .. "/vendor/local" })
+    assert.equals(root .. "/vendor/local/src/client.cr", definitions.find(buffer).path)
+    vim.fn.delete(shared, "rf")
+  end)
+
   it("reports unresolved project and shard requires", function()
     write(root .. "/shard.yml", {
       "name: definitions-spec",
@@ -343,6 +458,33 @@ describe("Crystal definitions", function()
     assert.equals(1, quickfix[1].lnum)
     assert.equals(10, quickfix[1].col)
     assert.matches("missing relative source", quickfix[1].text)
+  end)
+
+  it("ignores require-like text in comments and strings", function()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, {
+      '# require "./comment"',
+      'message = "require \\"./string\\""',
+      'require "./missing"',
+    })
+
+    local diagnostics = definitions.require_diagnostics(buffer)
+
+    assert.equals(1, #diagnostics)
+    assert.equals("./missing", diagnostics[1].require_path)
+    assert.equals(3, diagnostics[1].row)
+  end)
+
+  it("reports an unavailable Tree-sitter parser", function()
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "./missing"' })
+    local original_parser = vim.treesitter.get_string_parser
+    vim.treesitter.get_string_parser = function()
+      error("unavailable")
+    end
+    local ok, diagnostics = pcall(definitions.require_diagnostics, buffer)
+    vim.treesitter.get_string_parser = original_parser
+
+    assert.is_true(ok)
+    assert.equals("Crystal Tree-sitter parser unavailable", diagnostics[1].reason)
   end)
 
   it("refreshes cached require paths after an external source change", function()

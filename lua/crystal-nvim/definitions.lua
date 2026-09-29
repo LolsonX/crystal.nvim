@@ -837,9 +837,87 @@ local function declared_dependencies(project_root, cache)
   return dependencies
 end
 
-local function owning_project(root, path)
-  local shard = path:sub(#root + 2):match("^lib/([^/]+)/")
-  return shard and vim.fs.joinpath(root, "lib", shard) or root
+local function locked_dependencies(project_root, cache)
+  cache.lockfiles = cache.lockfiles or {}
+  local path = vim.fs.joinpath(project_root, "shard.lock")
+  local signature = file_signature(path)
+  local cached = cache.lockfiles[project_root]
+  if cached and cached.signature == signature then
+    return cached.dependencies
+  end
+  local dependencies = {}
+  local indentation
+  local current
+  local ok, lines = pcall(vim.fn.readfile, path)
+  if ok then
+    for _, line in ipairs(lines) do
+      local spaces = #(line:match("^(%s*)") or "")
+      if line:match("^%s*shards:%s*$") then
+        indentation = spaces
+      elseif indentation and spaces <= indentation and line:match("%S") then
+        break
+      elseif indentation and spaces == indentation + 2 then
+        current = line:match("^%s*([%w_-]+):")
+        if current then
+          dependencies[current] = {}
+        end
+      elseif current and spaces > indentation + 2 then
+        local value = line:match("^%s*path:%s*[\"']?([^\"'#]+)")
+        if value then
+          dependencies[current].path = value:match("^%s*(.-)%s*$")
+        end
+      end
+    end
+  end
+  cache.lockfiles[project_root] = { signature = signature, dependencies = dependencies }
+  return dependencies
+end
+
+local function installed_shard_root(root, name)
+  for _, path in ipairs(vim.fn.globpath(vim.fs.joinpath(root, "lib"), "*", false, true)) do
+    if vim.fs.basename(path) == name then
+      return vim.fn.fnamemodify(path, ":p")
+    end
+    if vim.uv.fs_stat(path .. "/shard.yml") then
+      local installed_name
+      local ok, lines = pcall(vim.fn.readfile, path .. "/shard.yml")
+      if ok then
+        for _, line in ipairs(lines) do
+          installed_name = line:match("^%s*name:%s*[\"']?([%w_-]+)")
+          if installed_name then
+            break
+          end
+        end
+      end
+      if installed_name == name then
+        return vim.fn.fnamemodify(path, ":p")
+      end
+    end
+  end
+end
+
+local function dependency_root(root, project_root, cache, name)
+  if not declared_dependencies(project_root, cache)[name] then
+    return nil, "undeclared shard '" .. name .. "'"
+  end
+  local lock_root = root
+  local locked = locked_dependencies(lock_root, cache)[name]
+  if not locked and project_root ~= root then
+    lock_root = project_root
+    locked = locked_dependencies(lock_root, cache)[name]
+  end
+  if locked and locked.path then
+    local path = locked.path:sub(1, 1) == "/" and locked.path or vim.fs.joinpath(lock_root, locked.path)
+    path = vim.fn.fnamemodify(path, ":p")
+    if vim.uv.fs_stat(path) then
+      return path
+    end
+  end
+  local path = installed_shard_root(project_root, name) or (project_root ~= root and installed_shard_root(root, name))
+  if path then
+    return path
+  end
+  return nil, "missing shard source"
 end
 
 local function standard_library_require_path(require_path)
@@ -854,22 +932,57 @@ local function standard_library_require_path(require_path)
   end
 end
 
+local function require_paths(source)
+  if not source:find("require", 1, true) then
+    return {}
+  end
+  local ok, parser = pcall(vim.treesitter.get_string_parser, source, "crystal")
+  if not ok then
+    return nil
+  end
+  local paths = {}
+  local function visit(node)
+    if node:type() == "require" then
+      local string = node:named_child(0)
+      local value = string and vim.treesitter.get_node_text(string, source):match("^[%\"'](.-)[%\"']$")
+      if value then
+        local row, col = string:range()
+        table.insert(paths, { path = value, row = row + 1, col = col + 1 })
+      end
+      return
+    end
+    for child in node:iter_children() do
+      visit(child)
+    end
+  end
+  local parsed, trees = pcall(parser.parse, parser)
+  if not parsed then
+    return nil
+  end
+  visit(trees[1]:root())
+  return paths
+end
+
 local function required_path(root, cache, path, require_path)
   local candidates = {}
   local reason
+  local boundary = root
   if require_path:sub(1, 1) == "." then
     table.insert(candidates, vim.fs.joinpath(vim.fs.dirname(path), require_path))
     reason = "missing relative source"
+    boundary = M.root(path)
   else
     local shard, nested = require_path:match("^([^/]+)/(.+)$")
-    local owner = owning_project(root, path)
-    if shard and not declared_dependencies(owner, cache)[shard] then
-      return nil, "undeclared shard '" .. shard .. "'"
-    end
+    local owner = M.root(path)
     if shard then
-      table.insert(candidates, vim.fs.joinpath(root, "lib", shard, "src", nested))
-      table.insert(candidates, vim.fs.joinpath(root, "lib", shard, nested))
+      local shard_root, error = dependency_root(root, owner, cache, shard)
+      if not shard_root then
+        return nil, error
+      end
+      table.insert(candidates, vim.fs.joinpath(shard_root, "src", nested))
+      table.insert(candidates, vim.fs.joinpath(shard_root, nested))
       reason = "missing shard source"
+      boundary = shard_root
     else
       if standard_library_require_path(require_path) then
         return nil, "standard library source"
@@ -880,10 +993,11 @@ local function required_path(root, cache, path, require_path)
   end
   for _, candidate in ipairs(candidates) do
     candidate = vim.fn.fnamemodify(candidate, ":p")
+    boundary = vim.fs.normalize(boundary)
     if not candidate:match("%.cr$") then
       candidate = candidate .. ".cr"
     end
-    if candidate:sub(1, #root + 1) == root .. "/" and vim.uv.fs_stat(candidate) then
+    if candidate:sub(1, #boundary + 1) == boundary .. "/" and vim.uv.fs_stat(candidate) then
       return candidate
     end
   end
@@ -895,11 +1009,25 @@ local function required_paths(root, cache, path, source, bufnr)
   local seen = {}
   local has_require = false
   cache.requires = cache.requires or {}
-  local function signature(current_path)
-    if bufnr and current_path == path and vim.api.nvim_buf_is_valid(bufnr) then
-      return "buffer:" .. vim.api.nvim_buf_get_changedtick(bufnr)
+  local buffers = {}
+  for _, loaded in ipairs(vim.api.nvim_list_bufs()) do
+    local loaded_path = vim.api.nvim_buf_get_name(loaded)
+    if vim.api.nvim_buf_is_loaded(loaded) and vim.bo[loaded].modified and loaded_path ~= "" then
+      buffers[vim.fn.fnamemodify(loaded_path, ":p")] = loaded
     end
-    return file_signature(current_path)
+  end
+  local function signature(current_path)
+    local owner = M.root(current_path)
+    local dependencies = table.concat({
+      file_signature(vim.fs.joinpath(owner, "shard.yml")) or "",
+      file_signature(vim.fs.joinpath(owner, "shard.lock")) or "",
+      file_signature(vim.fs.joinpath(root, "shard.lock")) or "",
+    }, ";")
+    local buffer = buffers[current_path]
+    if buffer then
+      return "buffer:" .. vim.api.nvim_buf_get_changedtick(buffer) .. ";" .. dependencies
+    end
+    return (file_signature(current_path) or "") .. ";" .. dependencies
   end
   local function visit(current_path, current_source)
     if seen[current_path] then
@@ -911,9 +1039,13 @@ local function required_paths(root, cache, path, source, bufnr)
     local entry = cache.requires[current_path]
     if not entry or entry.signature ~= current_signature then
       entry = { signature = current_signature, paths = {} }
-      current_source = current_source or disk_source(current_path)
-      for require_path in current_source:gmatch("require%s+[%\"']([^%\"']+)") do
-        local resolved = required_path(root, cache, current_path, require_path)
+      current_source = current_source or source_for(current_path, buffers[current_path])
+      local requires = require_paths(current_source)
+      if not requires then
+        return
+      end
+      for _, require_path in ipairs(requires) do
+        local resolved = required_path(root, cache, current_path, require_path.path)
         if resolved then
           table.insert(entry.paths, resolved)
         end
@@ -940,37 +1072,52 @@ function M.require_diagnostics(bufnr)
   local cache = cached_project(root)
   local diagnostics = {}
   local seen = {}
+  local buffers = {}
+  for _, loaded in ipairs(vim.api.nvim_list_bufs()) do
+    local loaded_path = vim.api.nvim_buf_get_name(loaded)
+    if vim.api.nvim_buf_is_loaded(loaded) and vim.bo[loaded].modified and loaded_path ~= "" then
+      buffers[vim.fn.fnamemodify(loaded_path, ":p")] = loaded
+    end
+  end
   local function visit(current_path, source)
     if seen[current_path] then
       return
     end
     seen[current_path] = true
-    for row, line in ipairs(vim.split(source, "\n", { plain = true })) do
-      local from = 1
-      while true do
-        local first, last, require_path = line:find("require%s+[%\"']([^%\"']+)", from)
-        if not first then
-          break
-        end
-        local resolved, reason = required_path(root, cache, current_path, require_path)
-        if resolved then
-          visit(resolved, disk_source(resolved))
-        elseif reason ~= "standard library source" then
-          local _, path_column = line:find(require_path, first, true)
-          table.insert(diagnostics, {
-            path = current_path,
-            require_path = require_path,
-            reason = reason,
-            row = row,
-            col = path_column - #require_path,
-          })
-        end
-        from = last + 1
+    local requires = require_paths(source)
+    if not requires then
+      table.insert(diagnostics, {
+        path = current_path,
+        reason = "Crystal Tree-sitter parser unavailable",
+        row = 1,
+        col = 0,
+      })
+      return
+    end
+    for _, require_path in ipairs(requires) do
+      local resolved, reason = required_path(root, cache, current_path, require_path.path)
+      if resolved then
+        visit(resolved, source_for(resolved, buffers[resolved]))
+      elseif reason ~= "standard library source" then
+        table.insert(diagnostics, {
+          path = current_path,
+          require_path = require_path.path,
+          reason = reason,
+          row = require_path.row,
+          col = require_path.col,
+        })
       end
     end
   end
   visit(absolute, source_for(absolute, bufnr))
   return diagnostics
+end
+
+local function require_diagnostic_message(diagnostic)
+  if not diagnostic.require_path then
+    return diagnostic.reason
+  end
+  return string.format("require %q: %s", diagnostic.require_path, diagnostic.reason)
 end
 
 function M.publish_require_diagnostics(bufnr)
@@ -989,7 +1136,7 @@ function M.publish_require_diagnostics(bufnr)
       col = diagnostic.col,
       severity = vim.diagnostic.severity.WARN,
       source = "crystal.nvim",
-      message = string.format("require %q: %s", diagnostic.require_path, diagnostic.reason),
+      message = require_diagnostic_message(diagnostic),
     })
   end
   for diagnostic_buffer, entries in pairs(by_buffer) do
@@ -1011,12 +1158,17 @@ local function index_project(root, bufnr)
     end
   end
   local current_path = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":p")
+  local paths = required_paths(root, cache, current_path, source_for(current_path, bufnr), bufnr) or cache.paths
+  local reachable = {}
+  for _, path in ipairs(paths) do
+    reachable[path] = true
+  end
   local overlays = {}
 
   for _, loaded in ipairs(vim.api.nvim_list_bufs()) do
     local path = vim.api.nvim_buf_get_name(loaded)
     local absolute = path ~= "" and vim.fn.fnamemodify(path, ":p") or ""
-    if vim.api.nvim_buf_is_loaded(loaded) and vim.bo[loaded].modified and absolute:sub(1, #root + 1) == root .. "/" and absolute:match("%.cr$") then
+    if vim.api.nvim_buf_is_loaded(loaded) and vim.bo[loaded].modified and (reachable[absolute] or absolute:sub(1, #root + 1) == root .. "/") and absolute:match("%.cr$") then
       overlays[absolute] = cached_buffer(cache, loaded, absolute)
     end
   end
@@ -1024,8 +1176,6 @@ local function index_project(root, bufnr)
   if current_path ~= "" and not cache.files[current_path] then
     overlays[current_path] = cached_buffer(cache, bufnr, current_path)
   end
-
-  local paths = required_paths(root, cache, current_path, source_for(current_path, bufnr), bufnr) or cache.paths
 
   if paths == cache.paths and not next(overlays) and cache.index then
     return cache.index
@@ -1040,6 +1190,10 @@ local function index_project(root, bufnr)
   local index = new_index(true)
   for _, path in ipairs(paths) do
     local file = overlays[path] or cache.files[path]
+    if not overlays[path] and (not file or path:sub(1, #root + 1) ~= root .. "/") then
+      local external = cached_file_index(cache, path)
+      file = external and { index = external }
+    end
     if file then
       add_symbols(index, file.index or file)
       overlays[path] = nil
@@ -1545,7 +1699,7 @@ function M.setup(options)
         filename = diagnostic.path,
         lnum = diagnostic.row,
         col = diagnostic.col + 1,
-        text = string.format("require %q: %s", diagnostic.require_path, diagnostic.reason),
+        text = require_diagnostic_message(diagnostic),
         type = "W",
       })
     end
@@ -1556,7 +1710,7 @@ function M.setup(options)
     end
     local lines = {}
     for _, diagnostic in ipairs(diagnostics) do
-      table.insert(lines, string.format("%s: require %q (%s)", vim.fn.fnamemodify(diagnostic.path, ":."), diagnostic.require_path, diagnostic.reason))
+      table.insert(lines, string.format("%s: %s", vim.fn.fnamemodify(diagnostic.path, ":."), require_diagnostic_message(diagnostic)))
     end
     vim.notify("crystal.nvim: unresolved requires\n" .. table.concat(lines, "\n"), vim.log.levels.WARN)
   end, { desc = "Show unresolved Crystal requires", force = true })
