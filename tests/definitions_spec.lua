@@ -335,6 +335,14 @@ describe("Crystal definitions", function()
 
     assert.matches("unresolved requires", message)
     assert.matches("missing relative source", message)
+    local diagnostic = vim.diagnostic.get(buffer)[1]
+    assert.equals(0, diagnostic.lnum)
+    assert.equals(9, diagnostic.col)
+    assert.matches("missing relative source", diagnostic.message)
+    local quickfix = vim.fn.getqflist()
+    assert.equals(1, quickfix[1].lnum)
+    assert.equals(10, quickfix[1].col)
+    assert.matches("missing relative source", quickfix[1].text)
   end)
 
   it("refreshes cached require paths after an external source change", function()

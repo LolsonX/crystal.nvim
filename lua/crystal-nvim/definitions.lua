@@ -15,6 +15,8 @@ local stdlib_paths
 local definition_mapping = "gd"
 local implementation_mapping = "gD"
 local managed_mappings = {}
+local require_diagnostics_namespace = vim.api.nvim_create_namespace("crystal-nvim-requires")
+local require_diagnostic_buffers = {}
 
 local declaration_kinds = {
   module_def = "module",
@@ -943,16 +945,57 @@ function M.require_diagnostics(bufnr)
       return
     end
     seen[current_path] = true
-    for require_path in source:gmatch("require%s+[%\"']([^%\"']+)") do
-      local resolved, reason = required_path(root, cache, current_path, require_path)
-      if resolved then
-        visit(resolved, disk_source(resolved))
-      elseif reason ~= "standard library source" then
-        table.insert(diagnostics, { path = current_path, require_path = require_path, reason = reason })
+    for row, line in ipairs(vim.split(source, "\n", { plain = true })) do
+      local from = 1
+      while true do
+        local first, last, require_path = line:find("require%s+[%\"']([^%\"']+)", from)
+        if not first then
+          break
+        end
+        local resolved, reason = required_path(root, cache, current_path, require_path)
+        if resolved then
+          visit(resolved, disk_source(resolved))
+        elseif reason ~= "standard library source" then
+          local _, path_column = line:find(require_path, first, true)
+          table.insert(diagnostics, {
+            path = current_path,
+            require_path = require_path,
+            reason = reason,
+            row = row,
+            col = path_column - #require_path,
+          })
+        end
+        from = last + 1
       end
     end
   end
   visit(absolute, source_for(absolute, bufnr))
+  return diagnostics
+end
+
+function M.publish_require_diagnostics(bufnr)
+  for diagnostic_buffer in pairs(require_diagnostic_buffers) do
+    vim.diagnostic.reset(require_diagnostics_namespace, diagnostic_buffer)
+  end
+  require_diagnostic_buffers = {}
+
+  local diagnostics = M.require_diagnostics(bufnr)
+  local by_buffer = {}
+  for _, diagnostic in ipairs(diagnostics) do
+    local diagnostic_buffer = vim.fn.bufadd(diagnostic.path)
+    by_buffer[diagnostic_buffer] = by_buffer[diagnostic_buffer] or {}
+    table.insert(by_buffer[diagnostic_buffer], {
+      lnum = diagnostic.row - 1,
+      col = diagnostic.col,
+      severity = vim.diagnostic.severity.WARN,
+      source = "crystal.nvim",
+      message = string.format("require %q: %s", diagnostic.require_path, diagnostic.reason),
+    })
+  end
+  for diagnostic_buffer, entries in pairs(by_buffer) do
+    vim.diagnostic.set(require_diagnostics_namespace, diagnostic_buffer, entries)
+    require_diagnostic_buffers[diagnostic_buffer] = true
+  end
   return diagnostics
 end
 
@@ -1495,7 +1538,18 @@ function M.setup(options)
     vim.notify("crystal.nvim: definition caches cleared", vim.log.levels.INFO)
   end, { desc = "Clear Crystal definition caches", force = true })
   vim.api.nvim_create_user_command("CrystalDefinitionsRequires", function()
-    local diagnostics = M.require_diagnostics()
+    local diagnostics = M.publish_require_diagnostics()
+    local quickfix = {}
+    for _, diagnostic in ipairs(diagnostics) do
+      table.insert(quickfix, {
+        filename = diagnostic.path,
+        lnum = diagnostic.row,
+        col = diagnostic.col + 1,
+        text = string.format("require %q: %s", diagnostic.require_path, diagnostic.reason),
+        type = "W",
+      })
+    end
+    vim.fn.setqflist({}, " ", { title = "Crystal require diagnostics", items = quickfix })
     if #diagnostics == 0 then
       vim.notify("crystal.nvim: all project requires resolve", vim.log.levels.INFO)
       return
