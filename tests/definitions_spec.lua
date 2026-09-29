@@ -311,6 +311,16 @@ describe("Crystal definitions", function()
     assert.equals("missing shard source", diagnostics[3].reason)
   end)
 
+  it("does not report a bare standard library require", function()
+    local stdlib = root .. "/stdlib"
+    write(stdlib .. "/json.cr", { "module JSON", "end" })
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "json"' })
+    definitions.setup({ paths = { stdlib } })
+
+    assert.same({}, definitions.require_diagnostics(buffer))
+    definitions.setup()
+  end)
+
   it("reports unresolved requires with a command", function()
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "./missing"' })
     definitions.setup()
@@ -1130,6 +1140,7 @@ describe("Crystal definitions", function()
   it("discovers standard library roots from CRYSTAL_PATH", function()
     local stdlib = vim.fn.tempname()
     write(stdlib .. "/prelude.cr", { "class String", "end" })
+    write(stdlib .. "/json.cr", { "module JSON", "end" })
     vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { "String" })
     vim.api.nvim_win_set_cursor(0, { 1, 1 })
     local original_executable = vim.fn.executable
@@ -1145,6 +1156,8 @@ describe("Crystal definitions", function()
     definitions.setup()
 
     local target = definitions.find(buffer)
+    vim.api.nvim_buf_set_lines(buffer, 0, -1, false, { 'require "json"' })
+    assert.same({}, definitions.require_diagnostics(buffer))
     definitions.setup({ stdlib = false })
     assert.is_nil(definitions.find(buffer))
     vim.fn.executable = original_executable

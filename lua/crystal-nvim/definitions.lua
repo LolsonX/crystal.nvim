@@ -840,6 +840,18 @@ local function owning_project(root, path)
   return shard and vim.fs.joinpath(root, "lib", shard) or root
 end
 
+local function standard_library_require_path(require_path)
+  for _, root in ipairs(standard_library_paths()) do
+    local path = vim.fs.joinpath(root, require_path)
+    if not path:match("%.cr$") then
+      path = path .. ".cr"
+    end
+    if vim.uv.fs_stat(path) then
+      return path
+    end
+  end
+end
+
 local function required_path(root, cache, path, require_path)
   local candidates = {}
   local reason
@@ -857,6 +869,9 @@ local function required_path(root, cache, path, require_path)
       table.insert(candidates, vim.fs.joinpath(root, "lib", shard, nested))
       reason = "missing shard source"
     else
+      if standard_library_require_path(require_path) then
+        return nil, "standard library source"
+      end
       table.insert(candidates, vim.fs.joinpath(root, "src", require_path))
       reason = "missing project source"
     end
@@ -932,7 +947,7 @@ function M.require_diagnostics(bufnr)
       local resolved, reason = required_path(root, cache, current_path, require_path)
       if resolved then
         visit(resolved, disk_source(resolved))
-      else
+      elseif reason ~= "standard library source" then
         table.insert(diagnostics, { path = current_path, require_path = require_path, reason = reason })
       end
     end
