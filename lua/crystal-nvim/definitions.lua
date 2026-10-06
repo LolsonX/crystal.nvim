@@ -316,6 +316,52 @@ local function file_signature(path)
   return string.format("%d:%d:%d:%d:%d", stat.mtime.sec, stat.mtime.nsec, stat.ctime.sec, stat.ctime.nsec, stat.size), stat
 end
 
+local function crystal_paths(root)
+  local paths = {}
+  local visited = {}
+  root = vim.fn.fnamemodify(root, ":p")
+
+  local function visit(directory)
+    local real = vim.uv.fs_realpath(directory)
+    if not real or visited[real] then
+      return
+    end
+    visited[real] = true
+    local handle = vim.uv.fs_scandir(directory)
+    if not handle then
+      return
+    end
+    while true do
+      local name, kind = vim.uv.fs_scandir_next(handle)
+      if not name then
+        break
+      end
+      local path = vim.fs.joinpath(directory, name)
+      if kind == "unknown" then
+        local stat = vim.uv.fs_stat(path)
+        kind = stat and stat.type
+      end
+      if kind == "directory" then
+        local stat = vim.uv.fs_lstat(path)
+        if not stat or stat.type ~= "link" then
+          visit(path)
+        end
+      elseif kind == "link" then
+        local stat = vim.uv.fs_stat(path)
+        if stat and stat.type == "file" and name:sub(-3) == ".cr" then
+          table.insert(paths, path)
+        end
+      elseif kind == "file" and name:sub(-3) == ".cr" then
+        table.insert(paths, path)
+      end
+    end
+  end
+
+  visit(root)
+  table.sort(paths)
+  return paths
+end
+
 local function cache_path(root)
   local directory = vim.g.crystal_nvim_cache_dir or vim.fs.joinpath(vim.fn.stdpath("cache"), "crystal-nvim", "definitions")
   return vim.fs.joinpath(directory, vim.fn.sha256(root) .. ".mpack")
@@ -500,7 +546,7 @@ local function start_indexing(root, cache)
   if cache.loading then
     return
   end
-  local paths = vim.fn.globpath(root, "**/*.cr", false, true)
+  local paths = crystal_paths(root)
   local state = {
     position = 1,
     seen = {},
@@ -562,7 +608,7 @@ local function start_indexing(root, cache)
 end
 
 local function cache_has_changes(root, cache)
-  local paths = vim.fn.globpath(root, "**/*.cr", false, true)
+  local paths = crystal_paths(root)
   if #paths ~= #cache.paths then
     return true
   end
@@ -714,11 +760,7 @@ local function stdlib_source_map(root)
   if cache.paths and now - cache.checked_at < 1000 then
     return cache
   end
-  local paths = vim.fn.globpath(root, "**/*.cr", false, true)
-  for index, path in ipairs(paths) do
-    paths[index] = vim.fn.fnamemodify(path, ":p")
-  end
-  table.sort(paths)
+  local paths = crystal_paths(root)
   local signature = paths_signature(paths)
   cache.checked_at = now
   if same_paths(cache.paths, paths) and cache.source_signature == signature then
@@ -1215,7 +1257,22 @@ function M.prewarm(bufnr)
   if path == "" then
     return
   end
-  cached_project(M.root(vim.fn.fnamemodify(path, ":p")))
+  local root = M.root(vim.fn.fnamemodify(path, ":p"))
+  local cache = project_cache[root]
+  if not cache then
+    cached_project(root)
+  elseif cache.initialized and not cache.loading and not cache.validation_scheduled then
+    cache.validation_scheduled = true
+    vim.defer_fn(function()
+      if project_cache[root] ~= cache then
+        return
+      end
+      cache.validation_scheduled = nil
+      if cache_has_changes(root, cache) then
+        start_indexing(root, cache)
+      end
+    end, 0)
+  end
 end
 
 function M.clear_cache()

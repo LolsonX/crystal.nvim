@@ -1110,6 +1110,42 @@ describe("Crystal definitions", function()
     assert.equals("Widget", definitions.find(buffer).name)
   end)
 
+  it("defers validation of initialized projects while prewarming buffers", function()
+    definitions.clear_cache()
+    vim.api.nvim_win_set_cursor(0, { 2, 12 })
+    assert.equals("Widget", definitions.find(buffer).name)
+    local original_scandir = vim.uv.fs_scandir
+    local scans = 0
+    vim.uv.fs_scandir = function(...)
+      scans = scans + 1
+      return original_scandir(...)
+    end
+
+    local ok, err = pcall(function()
+      definitions.prewarm(buffer)
+      definitions.prewarm(buffer)
+      assert.equals(0, scans)
+      vim.wait(100, function()
+        return scans > 0
+      end, 10)
+      assert.is_true(scans > 0)
+    end)
+    vim.uv.fs_scandir = original_scandir
+    if not ok then
+      error(err)
+    end
+  end)
+
+  it("does not follow cyclic source-directory symlinks", function()
+    write(root .. "/src/linked.cr", { "module Linked", "end" })
+    vim.fn.mkdir(root .. "/lib", "p")
+    assert(vim.uv.fs_symlink(root, root .. "/lib/cycle"))
+    definitions.clear_cache()
+
+    vim.api.nvim_win_set_cursor(0, { 2, 12 })
+    assert.equals("Widget", definitions.find(buffer).name)
+  end)
+
   it("does not persist failed Tree-sitter parses", function()
     definitions.clear_cache()
     local original_parser = vim.treesitter.get_string_parser
